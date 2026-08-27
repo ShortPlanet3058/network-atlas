@@ -8,6 +8,7 @@ Everything runs locally. The database and scan output are stored under `~/.local
 
 - Python 3.11 or newer
 - GNU Make
+- `ip` from `iproute2`
 - Nmap
 - `arp-scan` for local Ethernet discovery
 - `avahi-browse` and `avahi-daemon` for mDNS discovery
@@ -49,14 +50,15 @@ ip route
 Then run the collectors you need:
 
 ```bash
-# Preview the Nmap command without sending packets
-make scan-dry TARGET=10.23.45.0/24
+# Scan the primary local subnet with live progress
+make scan
 
-# Discover active hosts
+# Preview the detected target and Nmap command without sending packets
+make scan-dry
+
+# Scan a different authorized subnet or use the faster discovery profile
+make scan TARGET=10.23.45.0/24
 make scan-discovery TARGET=10.23.45.0/24
-
-# Collect services, operating-system hints, and routes
-make scan-inventory TARGET=10.23.45.0/24
 
 # Discover devices on the directly connected LAN
 make arp INTERFACE=eth0

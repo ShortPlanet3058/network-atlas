@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--timeout", type=int, default=1800)
     scan.add_argument("--dry-run", action="store_true", help="Validate and print the command without scanning")
     scan.add_argument("--sudo", action="store_true", help="Elevate only the Nmap subprocess, not the viewer/database")
+    scan.add_argument("--verbose", action="store_true", help="Show Nmap status while the scan runs")
 
     arp = sub.add_parser("arp", help="Discover the directly attached LAN with arp-scan")
     arp.add_argument("--interface", required=True, help="Interface such as eth0")
@@ -134,6 +135,7 @@ def main(argv: list[str] | None = None) -> None:
                         timeout=args.timeout,
                         dry_run=args.dry_run,
                         use_sudo=args.sudo,
+                        verbose=args.verbose,
                     )
                 )
             elif args.command == "arp":

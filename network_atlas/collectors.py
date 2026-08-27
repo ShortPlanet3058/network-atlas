@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -23,10 +24,17 @@ def _require(binary: str) -> str:
     return resolved
 
 
-def _run(command: Sequence[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: Sequence[str], timeout: int, *, live_stderr: bool = False
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            list(command), capture_output=True, text=True, timeout=timeout, check=False
+            list(command),
+            stdout=subprocess.PIPE,
+            stderr=None if live_stderr else subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise CollectorError(f"Command timed out after {timeout}s: {command[0]}") from exc
@@ -52,6 +60,7 @@ def collect_nmap(
     timeout: int = 1800,
     dry_run: bool = False,
     use_sudo: bool = False,
+    verbose: bool = False,
 ) -> dict[str, object]:
     network = validate_target(target, allow_public=allow_public, allow_large=allow_large)
     nmap = _require("nmap")
@@ -70,20 +79,38 @@ def collect_nmap(
     else:
         raise ValueError(f"Unknown scan profile: {profile}")
 
+    if verbose:
+        option_index = command.index(nmap) + 1
+        command[option_index:option_index] = ["-v", "--stats-every", "5s"]
+
     if dry_run:
         return {"command": command, "privileged": privileged, "imported": 0}
 
     scan_id = db.begin_scan("nmap", str(network), command)
     raw_path: Path | None = None
     try:
-        process = _run(command, timeout)
+        if verbose:
+            print(
+                f"[Network Atlas] Starting {profile} scan of {network}. "
+                "Nmap progress follows:",
+                file=sys.stderr,
+                flush=True,
+            )
+        process = _run(command, timeout, live_stderr=verbose)
         if process.returncode != 0:
-            raise CollectorError(process.stderr.strip() or f"Nmap exited with {process.returncode}")
+            error = process.stderr.strip() if process.stderr else ""
+            raise CollectorError(error or f"Nmap exited with {process.returncode}")
         raw_path = _save_raw(db, f"nmap-{profile}", "xml", process.stdout)
         db.mark_network_offline(network)
         imported = import_nmap_xml(db, process.stdout.encode("utf-8"))
         classify_all(db)
         db.finish_scan(scan_id, "complete", raw_path=str(raw_path))
+        if verbose:
+            print(
+                f"[Network Atlas] Scan complete: imported {imported} hosts.",
+                file=sys.stderr,
+                flush=True,
+            )
         return {
             "command": command,
             "privileged": privileged,

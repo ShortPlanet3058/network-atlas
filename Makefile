@@ -4,8 +4,8 @@ PYTHON ?= python3
 HOST ?= 127.0.0.1
 PORT ?= 8765
 TARGET ?=
-PROFILE ?= discovery
-INTERFACE ?= eth0
+PROFILE ?= inventory
+INTERFACE ?=
 SNMP_CONFIG ?= switches.json
 
 STATE_DIR ?= $(HOME)/.local/state/network-atlas
@@ -22,7 +22,7 @@ ATLAS = PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m network_atlas --db "$(DB)"
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "Network Atlas\n\nUsage: make <target> [VARIABLE=value]\n\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@printf '\nExamples:\n  make start\n  make scan-inventory TARGET=10.23.45.0/24\n  make arp INTERFACE=eth0\n  make stop\n'
+	@printf '\nExamples:\n  make start\n  make scan\n  make scan TARGET=10.23.45.0/24\n  make arp INTERFACE=eth0\n  make stop\n'
 
 init: ## Initialize the local database outside the repository
 	@mkdir -p "$(STATE_DIR)"
@@ -88,7 +88,7 @@ url: ## Print the local viewer URL
 	@echo "http://$(HOST):$(PORT)"
 
 doctor: ## Check required and optional local tools
-	@for tool in $(PYTHON) nmap arp-scan snmpwalk avahi-browse; do \
+	@for tool in $(PYTHON) ip nmap arp-scan snmpwalk avahi-browse; do \
 		if command -v "$$tool" >/dev/null 2>&1; then printf '  [ok] %s\n' "$$tool"; else printf '  [missing] %s\n' "$$tool"; fi; \
 	done
 
@@ -96,13 +96,33 @@ install-hooks: ## Enable repository privacy checks before commits and pushes
 	@git config core.hooksPath .githooks
 	@echo "Git privacy hooks enabled for this clone."
 
-scan: ## Run a scan: make scan TARGET=10.23.45.0/24 PROFILE=discovery|inventory
-	@test -n "$(TARGET)" || { echo "TARGET is required, e.g. make scan TARGET=10.23.45.0/24" >&2; exit 2; }
-	@$(ATLAS) scan --sudo --target "$(TARGET)" --profile "$(PROFILE)"
+scan: ## Scan the primary local subnet with live progress
+	@set -euo pipefail; \
+	interface="$(INTERFACE)"; \
+	if [[ -z "$$interface" ]]; then interface="$$(ip -o -4 route show default 2>/dev/null | awk 'NR == 1 { print $$5 }' || true)"; fi; \
+	if [[ -z "$$interface" ]]; then interface="$$(ip -o -4 addr show scope global 2>/dev/null | awk '$$2 != "lo" { print $$2; exit }' || true)"; fi; \
+	target="$(TARGET)"; \
+	if [[ -z "$$target" && -n "$$interface" ]]; then target="$$(ip -o -4 addr show dev "$$interface" scope global 2>/dev/null | awk 'NR == 1 { print $$4 }' || true)"; fi; \
+	if [[ -z "$$target" ]]; then echo "Could not detect a local IPv4 subnet. Use make scan TARGET=10.23.45.0/24" >&2; exit 2; fi; \
+	target="$$( $(PYTHON) -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1], strict=False))' "$$target" )"; \
+	echo "[Network Atlas] Interface: $${interface:-explicit target}"; \
+	echo "[Network Atlas] Target:    $$target"; \
+	echo "[Network Atlas] Profile:   $(PROFILE)"; \
+	$(ATLAS) scan --sudo --verbose --target "$$target" --profile "$(PROFILE)"
 
-scan-dry: ## Print the validated Nmap command without scanning
-	@test -n "$(TARGET)" || { echo "TARGET is required, e.g. make scan-dry TARGET=10.23.45.0/24" >&2; exit 2; }
-	@$(ATLAS) scan --target "$(TARGET)" --profile "$(PROFILE)" --dry-run
+scan-dry: ## Show the detected subnet and Nmap command without scanning
+	@set -euo pipefail; \
+	interface="$(INTERFACE)"; \
+	if [[ -z "$$interface" ]]; then interface="$$(ip -o -4 route show default 2>/dev/null | awk 'NR == 1 { print $$5 }' || true)"; fi; \
+	if [[ -z "$$interface" ]]; then interface="$$(ip -o -4 addr show scope global 2>/dev/null | awk '$$2 != "lo" { print $$2; exit }' || true)"; fi; \
+	target="$(TARGET)"; \
+	if [[ -z "$$target" && -n "$$interface" ]]; then target="$$(ip -o -4 addr show dev "$$interface" scope global 2>/dev/null | awk 'NR == 1 { print $$4 }' || true)"; fi; \
+	if [[ -z "$$target" ]]; then echo "Could not detect a local IPv4 subnet. Use make scan-dry TARGET=10.23.45.0/24" >&2; exit 2; fi; \
+	target="$$( $(PYTHON) -c 'import ipaddress, sys; print(ipaddress.ip_network(sys.argv[1], strict=False))' "$$target" )"; \
+	echo "[Network Atlas] Interface: $${interface:-explicit target}"; \
+	echo "[Network Atlas] Target:    $$target"; \
+	echo "[Network Atlas] Profile:   $(PROFILE)"; \
+	$(ATLAS) scan --verbose --target "$$target" --profile "$(PROFILE)" --dry-run
 
 scan-discovery: ## Discover hosts: make scan-discovery TARGET=10.23.45.0/24
 	@$(MAKE) --no-print-directory scan TARGET="$(TARGET)" PROFILE=discovery
