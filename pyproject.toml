@@ -1,0 +1,16 @@
+[project]
+name = "network-atlas"
+version = "0.1.0"
+description = "Local network inventory and interactive topology map built around Kali discovery tools"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+network-atlas = "network_atlas.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+network_atlas = ["static/*"]

@@ -1,0 +1,2 @@
+=;eth0;IPv4;Office Printer;_ipp._tcp;local;office-printer.local;192.168.50.45;631;"txtvers=1";"product=(Brother Printer)"
+=;eth0;IPv4;Living Room TV;_googlecast._tcp;local;living-room-tv.local;192.168.50.70;8009;"fn=Living Room TV";"md=Chromecast"

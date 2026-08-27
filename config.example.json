@@ -1,0 +1,15 @@
+{
+  "switches": [
+    {
+      "host": "10.23.45.2",
+      "version": "3",
+      "username": "network-atlas",
+      "security_level": "authPriv",
+      "auth_protocol": "SHA",
+      "auth_password_env": "ATLAS_SWITCH1_AUTH",
+      "privacy_protocol": "AES",
+      "privacy_password_env": "ATLAS_SWITCH1_PRIV",
+      "enabled": true
+    }
+  ]
+}

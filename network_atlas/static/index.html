@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Network Atlas</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">NA</span>
+      <div><h1>Network Atlas</h1><p>Local inventory and topology</p></div>
+    </div>
+    <div class="topbar-right">
+      <span class="local-badge">LOCAL ONLY</span>
+      <div class="scan-state"><span id="state-dot"></span><span id="scan-status">Loading inventory…</span></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="metrics" aria-label="Inventory summary">
+      <article><span>Devices</span><strong id="metric-devices">—</strong></article>
+      <article><span>Online</span><strong id="metric-online">—</strong></article>
+      <article><span>Open services</span><strong id="metric-services">—</strong></article>
+      <article><span>Known links</span><strong id="metric-links">—</strong></article>
+      <article><span>Classified</span><strong id="metric-classified">—</strong></article>
+    </section>
+
+    <section class="workspace">
+      <aside class="filters panel">
+        <div class="panel-heading">
+          <div><span class="eyebrow">Explore</span><h2>Inventory</h2></div>
+          <button id="refresh" class="icon-button" title="Refresh data" aria-label="Refresh data">↻</button>
+        </div>
+        <label class="search">
+          <span>Search</span>
+          <input id="search" type="search" placeholder="IP, MAC, hostname, vendor…" autocomplete="off">
+        </label>
+        <div class="filter-heading"><span>Device types</span><button id="clear-filters">Reset</button></div>
+        <div id="type-filters" class="type-filters"></div>
+        <div class="filter-heading"><span>Link layers</span></div>
+        <label class="check"><input type="checkbox" data-edge="lldp" checked><i class="link-swatch lldp"></i> LLDP physical</label>
+        <label class="check"><input type="checkbox" data-edge="switch-port" checked><i class="link-swatch switch-port"></i> Switch attachment</label>
+        <label class="check"><input type="checkbox" data-edge="route" checked><i class="link-swatch route"></i> Routed path</label>
+        <label class="check"><input type="checkbox" data-edge="membership" checked><i class="link-swatch membership"></i> Logical subnet</label>
+        <div class="device-list-heading"><span>Visible devices</span><b id="list-count">0</b></div>
+        <div id="device-list" class="device-list"></div>
+        <p class="hint">Scroll to zoom. Drag the background to pan and drag devices to reposition them.</p>
+      </aside>
+
+      <section class="map-panel panel" aria-label="Interactive network map">
+        <div class="map-toolbar">
+          <div><span id="visible-count">0</span> visible devices</div>
+          <div class="map-actions">
+            <button id="zoom-out" aria-label="Zoom out">−</button>
+            <button id="zoom-in" aria-label="Zoom in">+</button>
+            <button id="fit-map">Fit map</button>
+            <button id="relayout">Re-layout</button>
+          </div>
+        </div>
+        <svg id="network-map" role="img" aria-label="Interactive network topology">
+          <defs>
+            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur>
+              <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+            </filter>
+          </defs>
+          <g id="viewport"><g id="edges"></g><g id="edge-labels"></g><g id="nodes"></g></g>
+        </svg>
+        <div id="empty-map" class="empty-map" hidden>
+          <strong>No devices to display</strong>
+          <span>Import a scan or change the current filters.</span>
+        </div>
+      </section>
+
+      <aside class="details panel" aria-live="polite">
+        <div id="detail-empty" class="detail-empty">
+          <span class="radar">⌁</span>
+          <h2>Select a device</h2>
+          <p>Choose a node to inspect its identity, confidence, services and discovery evidence.</p>
+        </div>
+        <div id="detail-content" hidden>
+          <div class="detail-header">
+            <span id="detail-icon" class="device-icon"></span>
+            <div><span id="detail-type" class="eyebrow"></span><h2 id="detail-name"></h2></div>
+            <span id="detail-status" class="status-pill"></span>
+          </div>
+          <dl id="identity" class="identity"></dl>
+          <div class="confidence-block">
+            <div><span>Classification confidence</span><strong id="confidence-label"></strong></div>
+            <div class="confidence-track"><i id="confidence-bar"></i></div>
+          </div>
+          <section class="detail-section"><h3>Why this classification?</h3><ul id="reasons"></ul></section>
+          <section class="detail-section"><h3>Open services</h3><div id="services" class="service-list"></div></section>
+          <section class="detail-section"><h3>Recent evidence</h3><div id="evidence" class="evidence-list"></div></section>
+        </div>
+      </aside>
+    </section>
+
+    <section class="scan-history panel">
+      <div class="panel-heading"><div><span class="eyebrow">Audit trail</span><h2>Recent collections</h2></div></div>
+      <div id="scan-list" class="scan-list"></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

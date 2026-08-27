@@ -1,0 +1,45 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Network Atlas local state (always keep this outside Git)
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+scans/
+data/
+*.pid
+*.log
+
+# Likely raw discovery exports
+scan*.xml
+nmap*.xml
+*.nmap
+*.gnmap
+arp-scan*.txt
+mdns*.txt
+
+# Local credentials and switch configuration
+.env
+.env.*
+!.env.example
+switches.json
+config.json
+*.secret
+*.pem
+*.key
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*~

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+repository_root=$(git rev-parse --show-toplevel)
+cd "$repository_root"
+
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/privacy_check.py
+if command -v gitleaks >/dev/null 2>&1; then
+    gitleaks dir . --no-banner --redact --no-color
+fi

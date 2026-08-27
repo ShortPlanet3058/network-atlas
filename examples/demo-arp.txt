@@ -1,0 +1,8 @@
+Interface: eth0, type: EN10MB, MAC: de:ad:be:ef:00:01, IPv4: 192.168.50.10
+Starting arp-scan 1.10.0 with 256 hosts
+192.168.50.1	00:11:22:33:44:01	Example Networks
+192.168.50.20	b8:27:eb:00:00:20	Raspberry Pi Foundation
+192.168.50.45	30:05:5c:00:00:45	Brother Industries
+192.168.50.81	da:12:34:56:78:90	(Unknown: locally administered)
+4 packets received by filter, 0 packets dropped by kernel
+Ending arp-scan 1.10.0: 256 hosts scanned in 2.1 seconds

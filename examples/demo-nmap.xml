@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sV -O --traceroute 192.168.50.0/24" start="1787821200" version="7.99" xmloutputversion="1.05">
+  <host starttime="1787821201" endtime="1787821202">
+    <status state="up" reason="arp-response" reason_ttl="0"/>
+    <address addr="192.168.50.1" addrtype="ipv4"/>
+    <address addr="00:11:22:33:44:01" addrtype="mac" vendor="Example Networks"/>
+    <hostnames><hostname name="gateway.lab.internal" type="PTR"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/><service name="ssh" product="OpenSSH" version="9.2"/></port>
+      <port protocol="tcp" portid="443"><state state="open" reason="syn-ack"/><service name="https" product="Router administration"/></port>
+    </ports>
+    <os><osmatch name="Linux router appliance" accuracy="96"><osclass type="router" vendor="Linux" osfamily="Linux" accuracy="96"><cpe>cpe:/o:linux:linux_kernel</cpe></osclass></osmatch></os>
+  </host>
+  <host starttime="1787821202" endtime="1787821204">
+    <status state="up" reason="arp-response" reason_ttl="0"/>
+    <address addr="192.168.50.20" addrtype="ipv4"/>
+    <address addr="b8:27:eb:00:00:20" addrtype="mac" vendor="Raspberry Pi Foundation"/>
+    <hostnames><hostname name="home-server.lab.internal" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/><service name="ssh" product="OpenSSH" version="9.6"><cpe>cpe:/a:openbsd:openssh:9.6</cpe></service></port>
+      <port protocol="tcp" portid="80"><state state="open" reason="syn-ack"/><service name="http" product="nginx" version="1.26"/></port>
+    </ports>
+    <os><osmatch name="Linux 6.1 - 6.8" accuracy="94"><osclass type="general purpose" vendor="Linux" osfamily="Linux" accuracy="94"/></osmatch></os>
+    <trace port="80" proto="tcp"><hop ttl="1" ipaddr="192.168.50.1" host="gateway.lab.internal" rtt="0.5"/><hop ttl="2" ipaddr="192.168.50.20" host="home-server.lab.internal" rtt="1.1"/></trace>
+  </host>
+  <host starttime="1787821202" endtime="1787821205">
+    <status state="up" reason="arp-response" reason_ttl="0"/>
+    <address addr="192.168.50.45" addrtype="ipv4"/>
+    <address addr="30:05:5c:00:00:45" addrtype="mac" vendor="Brother Industries"/>
+    <hostnames><hostname name="office-printer.lab.internal" type="PTR"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="80"><state state="open" reason="syn-ack"/><service name="http" product="Brother Web Server"/></port>
+      <port protocol="tcp" portid="631"><state state="open" reason="syn-ack"/><service name="ipp" product="CUPS"/></port>
+      <port protocol="tcp" portid="9100"><state state="open" reason="syn-ack"/><service name="jetdirect" product="Brother printer"/></port>
+    </ports>
+    <os><osmatch name="Brother embedded print server" accuracy="98"><osclass type="printer" vendor="Brother" osfamily="embedded" accuracy="98"/></osmatch></os>
+    <trace port="80" proto="tcp"><hop ttl="1" ipaddr="192.168.50.1" host="gateway.lab.internal" rtt="0.4"/><hop ttl="2" ipaddr="192.168.50.45" host="office-printer.lab.internal" rtt="0.8"/></trace>
+  </host>
+  <runstats><finished time="1787821210" timestr="Thu Aug 27 09:00:10 2026" elapsed="10.00"/><hosts up="3" down="253" total="256"/></runstats>
+</nmaprun>
