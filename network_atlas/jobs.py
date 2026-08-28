@@ -285,6 +285,10 @@ def _run_neighbours(job: Job, db: AtlasDB) -> dict[str, Any]:
     return collectors.collect_neighbours(db)
 
 
+def _run_web_identity(job: Job, db: AtlasDB) -> dict[str, Any]:
+    return collectors.collect_web_identity(db, on_progress=job.report)
+
+
 def _run_mdns(job: Job, db: AtlasDB) -> dict[str, Any]:
     return collectors.collect_mdns(db)
 
@@ -309,9 +313,17 @@ def _run_sweep(job: Job, db: AtlasDB) -> dict[str, Any]:
     job.report(6.0, "Active scan")
     results["scan"] = _run_scan(job, db, _band(job, 6.0, 62.0))
 
-    job.report(62.0, "Resolving names")
+    job.report(58.0, "Reading web interfaces")
+    try:
+        results["web_identity"] = collectors.collect_web_identity(
+            db, on_progress=_band(job, 58.0, 66.0)
+        )
+    except Exception as exc:
+        results["web_identity"] = {"error": clean_text(str(exc), 300)}
+
+    job.report(66.0, "Resolving names")
     results["names"] = collectors.collect_names(
-        db, job.parameters.get("target") or None, on_progress=_band(job, 62.0, 74.0)
+        db, job.parameters.get("target") or None, on_progress=_band(job, 66.0, 74.0)
     )
 
     job.report(74.0, "Passive listen")
@@ -345,5 +357,6 @@ _RUNNERS: dict[str, JobRunner] = {
     "neighbours": _run_neighbours,
     "mdns": _run_mdns,
     "audit": _run_audit,
+    "web-identity": _run_web_identity,
     "sweep": _run_sweep,
 }

@@ -183,3 +183,63 @@ def classify_dhcp(vendor_class: str | None) -> dict[str, Any] | None:
                 "vendor_class": text[:160],
             }
     return None
+
+# DHCP option 55, the parameter request list. A client's DHCP implementation
+# decides which options it asks for and in which order, so the sequence is a
+# fingerprint of the OS rather than of anything an owner configured. It is the
+# only OS signal available for a device that sends no vendor class, which covers
+# most phones and many appliances.
+#
+# Matching is exact and the table is deliberately short. A prefix or subset match
+# would cover more devices but would also confidently mislabel them, and these
+# lists overlap heavily between OS families: the shared opening "1,3,6,15" says
+# nothing on its own. A signature absent from this table yields no claim.
+DHCP_PARAM_LISTS: tuple[tuple[str, str | None, str | None, str], ...] = (
+    # (option 55 sequence, os_family, device_type, human label)
+    ("1,3,6,15,31,33,43,44,46,47,119,121,249,252", "windows", "computer", "Windows"),
+    ("1,15,3,6,44,46,47,31,33,121,249,43", "windows", "computer", "Windows"),
+    ("1,15,3,6,44,46,47,31,33,121,249,43,252", "windows", "computer", "Windows"),
+    ("1,3,6,15,31,33,43,44,46,47,119,121,249,252,12", "windows", "computer", "Windows"),
+    ("1,121,3,6,15,119,252,95,44,46", "apple", None, "macOS"),
+    ("1,121,3,6,15,119,252,95,44,46,101", "apple", None, "macOS"),
+    ("1,3,6,15,119,95,252,44,46,47", "apple", None, "macOS"),
+    ("1,121,3,6,15,119,252", "apple", "phone", "iOS or iPadOS"),
+    ("1,3,6,15,119,252", "apple", "phone", "iOS or iPadOS"),
+    ("1,3,6,15,26,28,51,58,59,43", "android", "phone", "Android"),
+    ("1,3,6,15,26,28,51,58,59,43,114", "android", "phone", "Android"),
+    ("1,3,6,15,26,28,51,58,59", "android", "phone", "Android"),
+    ("1,28,2,3,15,6,119,12,44,47,26,121,42", "linux", None, "Linux (ISC dhclient)"),
+    ("1,2,6,12,15,26,28,121,3,33,40,41,42,119", "linux", None, "Linux (systemd-networkd)"),
+    ("1,3,6,12,15,26,28,42,51,54,58,59,119", "linux", None, "Linux (NetworkManager)"),
+    ("1,3,6,12,15,17,23,28,29,31,33,40,41,42", "linux", None, "Linux (dhcpcd)"),
+    ("1,3,6,12,15,28,42,43,66,67", "embedded", "iot", "Embedded Linux (BusyBox udhcp)"),
+    ("1,3,6,12,15,28,51,58,59", "embedded", "iot", "Embedded device"),
+)
+
+_PARAM_LIST_INDEX: dict[str, tuple[str | None, str | None, str]] = {
+    sequence: (family, kind, label)
+    for sequence, family, kind, label in DHCP_PARAM_LISTS
+}
+
+
+def classify_param_list(param_list: str | None) -> dict[str, Any] | None:
+    """Interpret a DHCP option 55 sequence.
+
+    Returns None for any sequence not in the table, which is the common case and
+    not an error.
+    """
+    if not param_list:
+        return None
+    sequence = ",".join(
+        part.strip() for part in param_list.split(",") if part.strip().isdigit()
+    )
+    match = _PARAM_LIST_INDEX.get(sequence)
+    if not match:
+        return None
+    family, kind, label = match
+    return {
+        "os_family": family,
+        "device_type": kind,
+        "label": label,
+        "param_list": sequence,
+    }

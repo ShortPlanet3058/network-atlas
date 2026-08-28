@@ -21,8 +21,9 @@ from . import (
     passive,
     tlsaudit,
     vulns,
+    webid,
 )
-from .classifier import classify_all
+from .classifier import classify_all, classify_model
 from .db import AtlasDB
 from .parsers import import_arp_scan, import_avahi, import_nmap_xml
 from .util import nmap_privileged, utc_now, validate_target
@@ -275,6 +276,8 @@ def _finalize(db: AtlasDB, before: dict[str, Any] | None = None) -> None:
     ingest.register_local_host(db)
     ingest.fold_link_local_duplicates(db)
     ingest.link_gateway(db)
+    db.resolve_address_conflicts()
+    db.rerank_hostnames()
     db.prune_ghosts()
     classify_all(db)
     findings.evaluate(db)
@@ -352,6 +355,11 @@ def nmap_command(
             command[1:1] = ["-PR"]
     elif profile in ("standard", "deep"):
         command[1:1] = ["-sS" if privileged else "-sT", "-sV", "-T4"]
+        # Two scripts that identify a host outright rather than guessing:
+        # smb-os-discovery returns the exact OS, hostname and domain, and nbstat
+        # the NetBIOS name and hardware address. Both run only where SMB is open,
+        # so they cost nothing on hosts without it, and both only read.
+        command[1:1] = ["--script", "smb-os-discovery,nbstat"]
         if profile == "standard":
             command[1:1] = ["--top-ports", "200"]
         else:
@@ -501,6 +509,85 @@ def collect_passive(
     finally:
         if capture_path:
             capture_path.unlink(missing_ok=True)
+
+
+def collect_web_identity(
+    db: AtlasDB, *, timeout: int = 45, on_progress: ProgressHook | None = None
+) -> dict[str, object]:
+    """Identify devices from their web interface.
+
+    Aimed squarely at the devices nothing else can name: appliances whose only
+    clue is a management page. The model is usually in the page title.
+    """
+    scan_id = db.begin_scan("web-identity", "inventory", ["whatweb"])
+    try:
+        if not webid.available():
+            raise CollectorError(
+                "whatweb is not installed; install it to identify devices from "
+                "their web interface"
+            )
+        before = events.snapshot(db)
+        placeholders = ",".join("?" for _ in webid.WEB_PORTS)
+        rows = db.conn.execute(
+            f"""SELECT s.device_id, s.port,
+                       COALESCE(d.manual_name,d.hostname,d.mac,'Device '||d.id) name,
+                       (SELECT a.address FROM addresses a WHERE a.device_id=s.device_id
+                         AND a.family='ipv4' ORDER BY a.last_seen DESC LIMIT 1) address
+                FROM services s JOIN devices d ON d.id = s.device_id
+                WHERE s.state LIKE 'open%' AND d.status='online'
+                  AND s.protocol='tcp' AND s.port IN ({placeholders})
+                ORDER BY s.device_id, s.port""",
+            webid.WEB_PORTS,
+        ).fetchall()
+
+        identified = titles = 0
+        for index, row in enumerate(rows, start=1):
+            if not row["address"]:
+                continue
+            if on_progress:
+                on_progress(
+                    100.0 * index / max(len(rows), 1),
+                    f"Reading {row['name']} on port {row['port']}",
+                )
+            result = webid.identify(row["address"], int(row["port"]), timeout=timeout)
+            if not result:
+                continue
+            identified += 1
+            device_id = int(row["device_id"])
+            if result["title"]:
+                titles += 1
+                db.add_observation(
+                    device_id, "web", "web_title", result["title"], 0.85, utc_now()
+                )
+                # Only a title that actually looks like a model designation, and
+                # only where a better source has not already supplied one.
+                known = webid.looks_like_a_model(result["title"]) or bool(
+                    classify_model(result["title"])
+                )
+                existing = db.conn.execute(
+                    "SELECT model FROM devices WHERE id=?", (device_id,)
+                ).fetchone()["model"]
+                if known and not existing:
+                    db.update_device(device_id, model=result["title"])
+            if result["server"]:
+                db.add_observation(
+                    device_id, "web", "web_server", result["server"], 0.6, utc_now()
+                )
+            for kind, label in result["type_hints"]:
+                db.add_observation(
+                    device_id, "web", "web_device_type", f"{kind}: {label}", 0.9, utc_now()
+                )
+            for detail in result["details"]:
+                db.add_observation(device_id, "web", "web_detail", detail, 0.5, utc_now())
+        db.commit()
+        _finalize(db, before)
+        detail = f"{identified} interface(s) read, {titles} named their model"
+        db.set_scan_progress(scan_id, 100.0, detail, identified)
+        db.finish_scan(scan_id, "complete")
+        return {"probed": len(rows), "identified": identified, "titles": titles}
+    except Exception as exc:
+        db.finish_scan(scan_id, "failed", error=str(exc))
+        raise
 
 
 def collect_neighbours(db: AtlasDB) -> dict[str, object]:

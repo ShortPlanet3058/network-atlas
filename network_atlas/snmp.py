@@ -236,7 +236,10 @@ def collect_switch(db: AtlasDB, config: dict[str, Any], *, timeout: int = 30) ->
             hostname=sys_name,
             status="online",
             seen_at=observed_at,
+            name_source="snmp",
         )
+        if sys_name:
+            db.add_observation(switch_id, "snmp", "snmp_sysname", sys_name, 0.9, observed_at)
         db.add_observation(
             switch_id, "configuration", "configured_role", "switch", 0.99, observed_at
         )

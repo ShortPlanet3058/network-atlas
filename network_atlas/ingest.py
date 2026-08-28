@@ -141,6 +141,7 @@ def import_passive(db: AtlasDB, analysis: dict[str, Any], *, observed_at: str | 
             address=addresses[0],
             family="ipv6" if addresses[0] and ":" in addresses[0] else "ipv4",
             hostname=hostname,
+            name_source="service",
             # Anything that transmitted during the capture window is demonstrably present,
             # even when it never answers an active probe.
             status="online",
@@ -162,13 +163,39 @@ def import_passive(db: AtlasDB, analysis: dict[str, Any], *, observed_at: str | 
             db.add_observation(device_id, "passive", "advertised_name", name, 0.8, observed_at)
         for service in host.get("services", []):
             db.add_observation(device_id, "passive", "advertised_service", service, 0.75, observed_at)
+        for browsed in host.get("browsed_services", []):
+            # What a device looks for, which says it is a client of that service
+            # rather than a provider of it.
+            db.add_observation(
+                device_id, "passive", "browsed_service", browsed, 0.4, observed_at
+            )
         for fingerprint in host.get("fingerprints", []):
             db.add_observation(device_id, "passive", "fingerprint", fingerprint, 0.85, observed_at)
+        # A model string from mDNS is exact hardware identification, and a friendly
+        # name is what a person actually called the device -- both beat a hostname.
+        for model in host.get("models", []):
+            db.add_observation(device_id, "mdns", "mdns_model", model, 0.95, observed_at)
+            db.update_device(device_id, model=model)
+        friendly = next(iter(host.get("friendly_names") or []), None)
+        if friendly:
+            db.add_observation(
+                device_id, "mdns", "mdns_friendly_name", friendly, 0.9, observed_at
+            )
+            # A name a person chose outranks every other source.
+            db.set_hostname(device_id, friendly, "friendly")
+        for agent in host.get("user_agents", []):
+            db.add_observation(device_id, "http", "user_agent", agent, 0.7, observed_at)
         for vendor_class in host.get("vendor_classes", []):
             # DHCP is broadcast, so this reaches us even across a switch -- the one
             # passive OS signal that survives switched Ethernet and Wi-Fi.
             db.add_observation(
                 device_id, "dhcp", "dhcp_vendor_class", vendor_class, 0.9, observed_at
+            )
+        for param_list in host.get("param_lists", []):
+            # Option 55. Recorded even when it matches no known signature: it is
+            # a stable per-device value, so a later table can interpret it.
+            db.add_observation(
+                device_id, "dhcp", "dhcp_param_list", param_list, 0.75, observed_at
             )
         devices += 1
 
@@ -186,7 +213,7 @@ def import_passive(db: AtlasDB, analysis: dict[str, Any], *, observed_at: str | 
             continue
         switch_id = int(row["id"])
         if name := clean_text(link.get("system_name"), 120):
-            db.update_device(switch_id, hostname=name)
+            db.set_hostname(switch_id, name, "netbios")
         capabilities = link.get("capabilities") or []
         if capabilities:
             # Recorded under one key so the classifier treats LLDP and CDP alike.
@@ -248,6 +275,7 @@ def import_leases(
             db.add_observation(
                 device_id, "dhcp", "requested_hostname", lease["hostname"], 0.9, observed_at
             )
+            db.set_hostname(device_id, lease["hostname"], "dhcp")
         if lease.get("vendor_class"):
             db.add_observation(
                 device_id, "dhcp", "dhcp_vendor_class", lease["vendor_class"], 0.9, observed_at
@@ -414,13 +442,13 @@ def apply_enrichment(
         ("reverse-dns", "ptr_record", reverse or {}),
         ("mdns", "mdns_name", mdns or {}),
     ]
-    for source, key, mapping in ordered:
+    for source_name, key, mapping in ordered:
         for address, name in mapping.items():
             device_id = db.find_device_by_address(address)
             if not device_id:
                 continue
-            db.update_device(device_id, hostname=name)
-            db.add_observation(device_id, source, key, name, 0.8, observed_at)
+            db.set_hostname(device_id, name, source_name)
+            db.add_observation(device_id, source_name, key, name, 0.8, observed_at)
             applied += 1
     for entry in netbios or []:
         device_id = None
@@ -433,7 +461,6 @@ def apply_enrichment(
             device_id = db.find_device_by_address(entry["address"])
         if device_id is None or not entry.get("hostname"):
             continue
-        db.update_device(device_id, hostname=entry["hostname"])
         db.add_observation(
             device_id, "netbios", "netbios_name", entry["hostname"], 0.85, observed_at
         )

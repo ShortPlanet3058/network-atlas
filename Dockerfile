@@ -51,6 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # the audit: offline exploit correlation and TLS posture
         exploitdb \
         sslscan \
+        # identifies appliances from their web interface, which is often the only
+        # place a model number is written down
+        whatweb \
         # optional: managed-switch topology over read-only SNMP
         snmp \
     && rm -rf /var/lib/apt/lists/*

@@ -62,7 +62,7 @@ endef
 
 .DEFAULT_GOAL := help
 .PHONY: help init ensure-db run start stop restart status logs url doctor install-hooks \
-	scan scan-dry sweep passive names neighbours \
+	scan scan-dry sweep passive names neighbours web-identity \
 	audit findings events monitor monitor-off wifi \
 	snmp classify summary check \
 	docker-setup docker-revert docker-build docker-up docker-down docker-logs \
@@ -164,6 +164,9 @@ names: ## Resolve names over DNS, mDNS and NetBIOS
 
 neighbours: ## Import the kernel ARP and IPv6 neighbour caches
 	@$(ATLAS) neighbours
+
+web-identity: ## Identify devices from their web interface (reads the landing page)
+	@$(ATLAS) web-identity
 
 snmp: ## Collect switch topology and ARP tables: make snmp SNMP_CONFIG=switches.json
 	@test -f "$(SNMP_CONFIG)" || { echo "Missing $(SNMP_CONFIG); copy config.example.json and keep the result untracked." >&2; exit 2; }

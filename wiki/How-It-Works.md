@@ -23,7 +23,8 @@ is the layer that correlates and persists what they produce.
 | `collectors` | Runs each external tool, streams progress, records the scan |
 | `parsers` | Nmap XML, arp-scan text, avahi output |
 | `passive` | tshark capture and extraction |
-| `fingerprint` | p0f parsing, DHCP vendor-class interpretation |
+| `fingerprint` | p0f parsing, DHCP vendor-class and option-55 interpretation |
+| `webid` | Reads a device's web management page with `whatweb` |
 | `enrich` | Reverse DNS, mDNS, NetBIOS name resolution |
 | `oui` | IEEE vendor lookup from the local registry |
 | `netinfo` | Interfaces, routes, neighbours, container detection |
@@ -93,7 +94,8 @@ Evidence that identifies a device **directly** outranks inference:
 | ~1.2 | Acts as the default gateway |
 | ~1.0 | Hostname naming a device class; mDNS print service |
 | ~0.95 | DHCP vendor class — the device naming its own platform |
-| ~0.9 | A printing service, a SIP service |
+| ~0.9 | A printing service, a SIP service; a web page naming a device class |
+| ~0.55 | DHCP option 55 matching a known OS signature |
 | ~0.5 | Vendor makes this kind of hardware |
 | ~0.2 | A general-purpose OS |
 | ~0.18 | Nmap's "general purpose", which says almost nothing |
@@ -113,6 +115,35 @@ Some deliberate corrections learned from real networks:
   `tvm-build-server` is not a television.
 - **A randomized MAC is itself a signal.** Only phones, tablets and laptops
   randomize.
+- **Nmap calls a Mac's AirPlay ports `rtsp`**, which is also what an IP camera
+  serves. Only 554 and 8554 count as camera evidence; the AirPlay ports
+  (5000, 7000, 7100, 49152, 62078) read as a computer instead.
+- **A device cannot be two things at once.** A confirmed macOS host is not a camera
+  or a printer, so a verdict incompatible with the OS family is penalised. Any one
+  rule is also capped, so a device with eight matching ports cannot out-vote a
+  first-party statement by repetition.
+- **An mDNS query is not an advertisement.** Every Mac and Android browses for
+  `_pdl-datastream._tcp`; reading queries as offers classified them all as printers.
+  Only responses count.
+
+### Names
+
+A device usually has several names and they are not equally good. They are ranked,
+and a better-sourced name is never overwritten by a worse one:
+
+| Rank | Source |
+|---|---|
+| 90 | mDNS `fn=` — a name a person chose |
+| 85 | SNMP `sysName` — set deliberately by an administrator |
+| 80 | NetBIOS / SMB — the device's own configured name |
+| 70 | The hostname it requests from DHCP |
+| 60 | A reverse DNS record |
+| 40 | An mDNS `.local` A record |
+| 20 | A service instance name, which is often service-specific |
+
+Without this, whichever collector happened to run last won, which is how an NVIDIA
+Shield ends up listed as `SHIELD Android TV-192-168-1-65-esfileshare` when
+`Shield Android TV AF29` was already known.
 
 ## Topology
 

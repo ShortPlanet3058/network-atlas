@@ -22,6 +22,7 @@ from .collectors import (
     collect_neighbours,
     collect_nmap,
     collect_passive,
+    collect_web_identity,
 )
 from .db import AtlasDB
 from .parsers import import_arp_scan, import_avahi, import_nmap_xml
@@ -78,6 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     names.add_argument("--target", help="CIDR for the NetBIOS sweep (default: detected subnet)")
 
     sub.add_parser("neighbours", help="Import the kernel ARP and IPv6 neighbour caches")
+
+    webscan = sub.add_parser(
+        "web-identity",
+        help="Identify devices from their web interface (reads the landing page only)",
+    )
+    webscan.add_argument("--timeout", type=int, default=45)
 
     arp = sub.add_parser("arp", help="Discover the directly attached LAN with arp-scan")
     arp.add_argument("--interface", required=True, help="Interface such as eth0")
@@ -256,6 +263,8 @@ def main(argv: list[str] | None = None) -> None:
                 _print_result(collect_names(db, args.target))
             elif args.command == "neighbours":
                 _print_result(collect_neighbours(db))
+            elif args.command == "web-identity":
+                _print_result(collect_web_identity(db, timeout=args.timeout))
             elif args.command == "arp":
                 _print_result(
                     collect_arp(db, args.interface, timeout=args.timeout, use_sudo=args.sudo)

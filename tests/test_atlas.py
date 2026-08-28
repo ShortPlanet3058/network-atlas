@@ -22,6 +22,7 @@ from network_atlas import (
     vulns,
     wireless,
 )
+from network_atlas import classifier as classifier_module
 from network_atlas.classifier import classify, classify_all, os_family
 from network_atlas.db import AtlasDB
 from network_atlas.parsers import (
@@ -817,6 +818,7 @@ class AtlasTestCase(unittest.TestCase):
             "p0f": "p0f",
             "searchsploit": "exploitdb",
             "sslscan": "sslscan",
+            "whatweb": "whatweb",
             "snmpwalk": "snmp",
             "setcap": "libcap2-bin",
             "getcap": "libcap2-bin",
@@ -1048,6 +1050,167 @@ class AtlasTestCase(unittest.TestCase):
         self.assertNotIn("no-new-privileges", stack)
         self.assertNotIn("privileged: true", stack)
 
+    def test_airplay_is_not_mistaken_for_a_camera(self) -> None:
+        """AirPlay runs over RTSP, so Nmap reports macOS 5000/7000 as "rtsp".
+
+        Matching the service name alone classified every Mac with AirPlay enabled
+        as a security camera, and scored it higher than a real camera did.
+        """
+        airplay = [
+            {"port": port, "protocol": "tcp", "name": "rtsp", "product": "",
+             "version": "", "extra": "", "cpe": ""}
+            for port in (5000, 7000)
+        ]
+        for hostname in (None, "raphs-air", "mac-mini-bureau"):
+            data = {
+                "services": airplay, "observations": [],
+                "os_name": "Apple macOS 11 (Big Sur) - 13 (Ventura) or iOS 16",
+            }
+            if hostname:
+                data["hostname"] = hostname
+            kind, _confidence, _why, _family = classify(data)
+            self.assertEqual(kind, "computer", f"hostname={hostname}")
+
+        # A real camera on the standard port is still a camera.
+        kind, _c, _w, _f = classify({
+            "hostname": "front-door", "observations": [],
+            "services": [{"port": 554, "protocol": "tcp", "name": "rtsp",
+                          "product": "", "version": "", "extra": "", "cpe": ""}],
+        })
+        self.assertEqual(kind, "camera")
+
+    def test_hostname_cam_needs_a_qualifier(self) -> None:
+        # "cam" alone is Cameron or Camille at least as often as a camera.
+        computer, _c, _w, _f = classify(
+            {"hostname": "cameron-laptop", "services": [], "observations": []}
+        )
+        self.assertEqual(computer, "computer")
+        camera, _c, _w, _f = classify(
+            {"hostname": "cam-front", "services": [], "observations": []}
+        )
+        self.assertEqual(camera, "camera")
+
+    def test_operating_system_rules_out_incompatible_types(self) -> None:
+        # Appliances do not run macOS or Windows, so a service-shaped guess must
+        # not outrank the platform itself.
+        for os_name in ("Apple macOS 13", "Microsoft Windows 11"):
+            kind, _c, _w, _f = classify({
+                "os_name": os_name, "observations": [],
+                "services": [{"port": 554, "protocol": "tcp", "name": "rtsp",
+                              "product": "", "version": "", "extra": "", "cpe": ""}],
+            })
+            self.assertEqual(kind, "computer", os_name)
+        # But a network OS must NOT penalise "computer": Nmap reads generic Linux
+        # as OpenWrt often enough that doing so turns laptops back into routers.
+        kind, _c, _w, _f = classify({
+            "os_name": "OpenWrt 21.02 (Linux 5.4)", "hostname": "debian-4",
+            "vendor": "Dell Inc.", "services": [], "observations": [],
+        })
+        self.assertEqual(kind, "computer")
+
+    def test_repeated_service_evidence_is_capped(self) -> None:
+        """One rule must not multiply with the number of matching ports."""
+        one = [{"port": 9100, "protocol": "tcp", "name": "jetdirect",
+                "product": "", "version": "", "extra": "", "cpe": ""}]
+        many = one + [
+            {"port": port, "protocol": "tcp", "name": "ipp", "product": "",
+             "version": "", "extra": "", "cpe": ""}
+            for port in (515, 631)
+        ]
+        _k1, single, _w, _f = classify({"services": one, "observations": []})
+        _k2, triple, _w, _f = classify({"services": many, "observations": []})
+        self.assertLess(
+            triple - single, 0.2,
+            "three printing ports should not treble the printing evidence",
+        )
+
+    def test_mdns_model_strings_identify_hardware(self) -> None:
+        # The device stating its own hardware model, which nothing infers better.
+        expected = {
+            "SHIELD Android TV": "media",
+            "MacBookPro18,3": "computer",
+            "iPhone15,2": "phone",
+            "AppleTV6,2": "media",
+            "Brother MFC-L2750DW series": "printer",
+            "DiskStation DS920+": "storage",
+            "PlayStation 5": "game-console",
+            "AXIS P3245": "camera",
+        }
+        for model, kind in expected.items():
+            result = classifier_module.classify_model(model)
+            self.assertIsNotNone(result, model)
+            self.assertEqual(result[0], kind, model)
+        self.assertIsNone(classifier_module.classify_model("Some Unknown Thing"))
+        self.assertIsNone(classifier_module.classify_model(None))
+
+        # And it overrides a wrong service-based guess.
+        kind, _c, _w, _f = classify({
+            "services": [{"port": 5000, "protocol": "tcp", "name": "rtsp",
+                          "product": "", "version": "", "extra": "", "cpe": ""}],
+            "observations": [{"key": "mdns_model", "value": "MacBookPro18,3"}],
+        })
+        self.assertEqual(kind, "computer")
+
+    def test_mdns_txt_records_are_split_into_pairs(self) -> None:
+        # A TXT record holds several strings; tshark joins them with commas, and a
+        # value can itself contain one.
+        pairs = passive._split_txt(
+            "id=abc,rm=,ve=05,md=SHIELD Android TV,fn=Shield Android TV AF29,ca=463365"
+        )
+        parsed = dict(pair.split("=", 1) for pair in pairs if "=" in pair)
+        self.assertEqual(parsed["md"], "SHIELD Android TV")
+        self.assertEqual(parsed["fn"], "Shield Android TV AF29")
+        self.assertEqual(passive._split_txt(""), [])
+
+    def test_mdns_txt_read_takes_every_occurrence(self) -> None:
+        """The interesting TXT string is rarely the first one in the record.
+
+        With tshark's default occurrence=f only "id=..." came through and every
+        model and friendly name was silently dropped.
+        """
+        import inspect
+
+        body = inspect.getsource(passive.analyze)
+        self.assertIn('occurrence="a"', body)
+
+    def test_one_online_device_per_address(self) -> None:
+        """Enforced after collection, not only at write time.
+
+        mark_network_offline() marks a whole range offline before every import, so
+        a second device can take an address during that window and both end up
+        online afterwards.
+        """
+        first = self.db.ensure_device(
+            mac="00:11:22:33:77:01", address="10.23.45.60", status="online"
+        )
+        second = self.db.ensure_device(mac="00:11:22:33:77:02", status="online")
+        # Simulate the window: the holder is briefly offline, so the write is allowed.
+        self.db.update_device(first, status="offline")
+        self.db.commit()
+        self.db.ensure_device(
+            mac="00:11:22:33:77:02", address="10.23.45.60", status="online"
+        )
+        self.db.update_device(first, status="online")
+        self.db.commit()
+        owners = [
+            row["device_id"]
+            for row in self.db.conn.execute(
+                "SELECT device_id FROM addresses WHERE address='10.23.45.60'"
+            )
+        ]
+        self.assertEqual(len(owners), 2, "precondition: both hold it")
+
+        self.assertEqual(self.db.resolve_address_conflicts(), 1)
+        owners = [
+            row["device_id"]
+            for row in self.db.conn.execute(
+                """SELECT a.device_id FROM addresses a JOIN devices d ON d.id=a.device_id
+                   WHERE a.address='10.23.45.60' AND d.status='online'"""
+            )
+        ]
+        self.assertEqual(len(owners), 1)
+        self.assertEqual(owners[0], second, "most recently seen should keep it")
+
     # -- scheduler --------------------------------------------------------
     def test_monitoring_is_off_until_switched_on(self) -> None:
         # Scanning sends packets to other people's devices; it must never start
@@ -1195,6 +1358,149 @@ class AtlasTestCase(unittest.TestCase):
         device = self.db.devices()[0]
         self.assertEqual(device["manual_name"], "Desk machine")
         self.assertEqual(device["manual_type"], "server")
+
+    def test_hostname_precedence_keeps_the_best_name(self) -> None:
+        """A name a person chose must survive a later, worse-sourced name."""
+        import_arp_scan(self.db, "10.23.45.9 aa:bb:cc:dd:ee:01 Nvidia")
+        device_id = self.db.find_device_by_address("10.23.45.9")
+        assert device_id is not None
+
+        # Arrival order deliberately puts the worst source last.
+        self.assertTrue(self.db.set_hostname(device_id, "Shield Android TV AF29", "friendly"))
+        self.assertFalse(self.db.set_hostname(device_id, "SHIELDANDROIDTV", "netbios"))
+        self.assertFalse(
+            self.db.set_hostname(
+                device_id, "SHIELD Android TV-192-168-1-65-esfileshare", "service"
+            )
+        )
+        self.assertEqual(self.db.devices()[0]["hostname"], "Shield Android TV AF29")
+
+    def test_hostname_precedence_upgrades_a_weak_name(self) -> None:
+        import_arp_scan(self.db, "10.23.45.10 aa:bb:cc:dd:ee:02 Vendor")
+        device_id = self.db.find_device_by_address("10.23.45.10")
+        assert device_id is not None
+        self.db.set_hostname(device_id, "_googlecast._tcp-instance", "service")
+        self.db.set_hostname(device_id, "living-room-tv", "friendly")
+        self.assertEqual(self.db.devices()[0]["hostname"], "living-room-tv")
+        # Equal rank still refreshes, so a renamed device is picked up.
+        self.db.set_hostname(device_id, "kitchen-tv", "friendly")
+        self.assertEqual(self.db.devices()[0]["hostname"], "kitchen-tv")
+
+    def test_ensure_device_cannot_downgrade_a_hostname(self) -> None:
+        device_id = self.db.ensure_device(
+            address="10.23.45.11", hostname="office-printer", name_source="dhcp"
+        )
+        self.db.ensure_device(
+            address="10.23.45.11",
+            hostname="office-printer-192-168-1-4-ipp",
+            name_source="service",
+        )
+        row = self.db.conn.execute(
+            "SELECT hostname FROM devices WHERE id=?", (device_id,)
+        ).fetchone()
+        self.assertEqual(row["hostname"], "office-printer")
+
+    def test_dhcp_param_list_signatures(self) -> None:
+        from network_atlas.fingerprint import DHCP_PARAM_LISTS, classify_param_list
+        from network_atlas.passive import _request_list
+
+        sequences = [sequence for sequence, _, _, _ in DHCP_PARAM_LISTS]
+        self.assertEqual(len(sequences), len(set(sequences)), "duplicate signature")
+
+        macos = classify_param_list("1,121,3,6,15,119,252,95,44,46")
+        assert macos is not None
+        self.assertEqual(macos["os_family"], "apple")
+        android = classify_param_list("1,3,6,15,26,28,51,58,59,43")
+        assert android is not None
+        self.assertEqual(android["device_type"], "phone")
+        # The shared opening is not distinctive, so it must yield no claim.
+        self.assertIsNone(classify_param_list("1,3,6,15"))
+        self.assertIsNone(classify_param_list(None))
+        # tshark emits the raw items; order carries the fingerprint.
+        self.assertEqual(_request_list("1, 3,6 ,15"), "1,3,6,15")
+        self.assertEqual(_request_list("1,3,junk,6"), "1,3,6")
+        self.assertEqual(_request_list(""), "")
+
+    def test_param_list_alone_identifies_a_phone(self) -> None:
+        """Option 55 must carry the OS when nothing else names it."""
+        ios = {
+            "vendor": "Apple",
+            "services": [],
+            "observations": [
+                {"key": "dhcp_param_list", "value": "1,121,3,6,15,119,252", "source": "dhcp"}
+            ],
+        }
+        kind, _confidence, reasons, family = classify(ios)
+        self.assertEqual(kind, "phone")
+        self.assertEqual(family, "apple")
+        self.assertTrue(any("DHCP option list" in reason for reason in reasons))
+
+    def test_repeated_observations_collapse_to_one_row(self) -> None:
+        """Re-scanning must refresh a fact, not append a copy of it."""
+        device_id = self.db.ensure_device(address="10.23.45.12")
+        self.db.add_observation(device_id, "web", "web_server", "debut/1.30", 0.6, "2026-01-01T00:00:00Z")
+        self.db.add_observation(device_id, "web", "web_server", "debut/1.30", 0.4, "2026-02-01T00:00:00Z")
+        self.db.add_observation(device_id, "web", "web_server", "openresty", 0.6, "2026-02-01T00:00:00Z")
+        rows = self.db.conn.execute(
+            "SELECT value, confidence, observed_at FROM observations"
+            " WHERE device_id=? AND key='web_server' ORDER BY value",
+            (device_id,),
+        ).fetchall()
+        self.assertEqual([row["value"] for row in rows], ["debut/1.30", "openresty"])
+        # The newer sighting wins on time; the stronger one wins on confidence.
+        self.assertEqual(rows[0]["observed_at"], "2026-02-01T00:00:00Z")
+        self.assertEqual(rows[0]["confidence"], 0.6)
+
+    def test_samba_os_string_is_recorded_as_a_dialect(self) -> None:
+        """Samba reports an SMB dialect, not its host OS."""
+        xml = r"""<?xml version="1.0"?><nmaprun>
+          <host><status state="up"/>
+            <address addr="10.23.45.13" addrtype="ipv4"/>
+            <hostscript><script id="smb-os-discovery" output="ignored">
+              <elem key="os">Windows 6.1</elem>
+              <elem key="lanmanager">Samba 4.9.1</elem>
+              <elem key="server">SHIELDANDROIDTV\x00</elem>
+              <elem key="workgroup">WORKGROUP\x00</elem>
+            </script></hostscript>
+          </host></nmaprun>"""
+        path = Path(self.temp.name) / "smb.xml"
+        path.write_text(xml)
+        import_nmap_xml(self.db, path)
+        device_id = self.db.find_device_by_address("10.23.45.13")
+        assert device_id is not None
+        recorded = {
+            row["key"]: row["value"]
+            for row in self.db.conn.execute(
+                "SELECT key, value FROM observations WHERE device_id=?", (device_id,)
+            )
+        }
+        self.assertEqual(recorded.get("smb_dialect"), "Windows 6.1")
+        self.assertNotIn("smb_os", recorded)
+        # The nulls SMB pads its fields with must not survive into a name.
+        self.assertEqual(recorded.get("smb_computer_name"), "SHIELDANDROIDTV")
+        self.assertEqual(recorded.get("smb_workgroup"), "WORKGROUP")
+
+    def test_real_smb_os_is_still_trusted(self) -> None:
+        xml = """<?xml version="1.0"?><nmaprun>
+          <host><status state="up"/>
+            <address addr="10.23.45.14" addrtype="ipv4"/>
+            <hostscript><script id="smb-os-discovery" output="ignored">
+              <elem key="os">Windows 10 Pro 19041</elem>
+              <elem key="lanmanager">Windows 10 Pro 6.3</elem>
+            </script></hostscript>
+          </host></nmaprun>"""
+        path = Path(self.temp.name) / "smb-windows.xml"
+        path.write_text(xml)
+        import_nmap_xml(self.db, path)
+        device_id = self.db.find_device_by_address("10.23.45.14")
+        assert device_id is not None
+        recorded = {
+            row["key"]: row["value"]
+            for row in self.db.conn.execute(
+                "SELECT key, value FROM observations WHERE device_id=?", (device_id,)
+            )
+        }
+        self.assertEqual(recorded.get("smb_os"), "Windows 10 Pro 19041")
 
     def test_real_world_network_and_media_signatures(self) -> None:
         openwrt = {"os_name": "OpenWrt 21.02 (Linux 5.4)", "services": [], "observations": []}

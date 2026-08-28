@@ -14,7 +14,7 @@ from collections import defaultdict
 from typing import Any
 
 from .db import AtlasDB
-from .fingerprint import classify_dhcp
+from .fingerprint import classify_dhcp, classify_param_list
 
 
 # Nmap's own device_type vocabulary mapped onto ours.
@@ -55,10 +55,14 @@ HOSTNAME_RULES: tuple[tuple[str, str, float, str], ...] = (
      "printer", 1.35, "Hostname names a printer"),
     (r"synology|diskstation|truenas|freenas|unraid|\bqnap\b|\bnas\b|\bstorage\b",
      "storage", 1.30, "Hostname names network storage"),
-    (r"\b(cam|camera|ipcam|doorbell|reolink|hikvision|dahua|unifi-?protect)\b",
+    # "cam" on its own is Cameron or Camille at least as often as a camera, so it
+    # needs a qualifier; the distinctive vendor names do not.
+    (r"camera|ipcam|webcam|doorbell|reolink|hikvision|dahua|unifi-?protect"
+     r"|\bcam-?\d+\b|\bcam-(front|back|door|garage|garden|hall)\b",
      "camera", 1.20, "Hostname names a camera"),
-    (r"macbook|thinkpad|elitebook|probook|latitude|optiplex|workstation"
-     r"|\bimac\b|\bdesktop\b|\blaptop\b|\bpc\b|\bws\b",
+    (r"macbook|macmini|mac-mini|macpro|mac-pro|thinkpad|elitebook|probook"
+     r"|latitude|optiplex|workstation|\bimac\b|\bmbp\b|\bmba\b"
+     r"|\bdesktop\b|\blaptop\b|\bpc\b|\bws\b",
      "computer", 1.15, "Hostname names a personal computer"),
     (r"iphone|ipad(?!dle)|oneplus|redmi|\bandroid\b|\bpixel\b|\bgalaxy\b|\bphone\b",
      "phone", 1.10, "Hostname names a phone or tablet"),
@@ -77,6 +81,10 @@ HOSTNAME_RULES: tuple[tuple[str, str, float, str], ...] = (
     (r"\b(sonos|heos|homepod|speaker|receiver|denon|yamaha|bose)\b",
      "media", 1.20, "Hostname names an audio device"),
 )
+
+# macOS and Apple TV listen here for AirPlay and Continuity. Nmap fingerprints
+# several of them as RTSP, which is technically correct and misleading.
+AIRPLAY_PORTS = frozenset({5000, 7000, 7100, 49152, 62078})
 
 NETWORK_VENDORS = (
     "cisco", "juniper", "aruba", "ubiquiti", "mikrotik", "fortinet", "netgear",
@@ -111,6 +119,44 @@ COMPUTER_VENDORS = (
     "supermicro", "msi",
 )
 
+# Hardware model strings advertised over mDNS, which are exact rather than
+# inferred. Matched as substrings because vendors pad them ("SHIELD Android TV",
+# "MacBookPro18,3", "Brother MFC-L2750DW series").
+MODEL_RULES: tuple[tuple[str, str, str], ...] = (
+    (r"macbook|imac|mac ?mini|mac ?pro|macstudio", "computer", "Mac"),
+    (r"ipad", "computer", "iPad"),
+    (r"iphone", "phone", "iPhone"),
+    (r"apple ?tv|appletv", "media", "Apple TV"),
+    (r"homepod", "media", "HomePod"),
+    (r"watch\d|apple ?watch", "phone", "Apple Watch"),
+    (r"shield|chromecast|android ?tv|google ?tv|nest ?hub|fire ?tv|roku|bravia|webos",
+     "media", "streaming device"),
+    (r"sonos|heos|denon|yamaha|bose|airport", "media", "audio device"),
+    (r"brother|hp |laserjet|officejet|epson|canon|kyocera|lexmark|mfc-|dcp-",
+     "printer", "printer"),
+    (r"synology|diskstation|qnap|truenas|readynas", "storage", "network storage"),
+    (r"playstation|ps[45]|xbox|nintendo|switch console", "game-console", "game console"),
+    (r"unifi|udm|uap|usw|ubiquiti|omada|eap\d|sg\d{3}", "network-device", "network device"),
+    (r"hue|shelly|tasmota|sonoff|tuya|thermostat|doorbell|smartplug",
+     "iot", "smart-home device"),
+    (r"axis|reolink|hikvision|dahua|amcrest|wyze ?cam", "camera", "camera"),
+)
+_COMPILED_MODEL_RULES = tuple(
+    (re.compile(pattern, re.IGNORECASE), kind, label)
+    for pattern, kind, label in MODEL_RULES
+)
+
+
+def classify_model(model: str | None) -> tuple[str, str] | None:
+    """Map an advertised hardware model to a device type."""
+    if not model:
+        return None
+    for pattern, kind, label in _COMPILED_MODEL_RULES:
+        if pattern.search(model):
+            return kind, label
+    return None
+
+
 # Coarse OS families, checked in order; the first match wins.
 OS_FAMILIES: tuple[tuple[str, str], ...] = (
     (r"windows server", "windows-server"),
@@ -125,6 +171,14 @@ OS_FAMILIES: tuple[tuple[str, str], ...] = (
     (r"linux", "linux"),
     (r"embedded|vxworks|qnx|rtos", "embedded"),
 )
+
+
+# Readable names for the coarse families, used in explanations.
+OS_FAMILY_LABELS = {
+    "windows": "Windows", "windows-server": "Windows Server", "apple": "macOS",
+    "apple-mobile": "iOS or iPadOS", "android": "Android", "linux": "Linux",
+    "bsd": "BSD", "network-os": "a network operating system", "embedded": "an embedded OS",
+}
 
 
 def _short_hostname(value: str | None) -> str:
@@ -156,7 +210,20 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
     scores: dict[str, float] = defaultdict(float)
     reasons: dict[str, list[str]] = defaultdict(list)
 
-    def vote(kind: str, weight: float, reason: str) -> None:
+    # Cumulative weight already contributed by each rule, so a device with five
+    # open web ports does not get five times the "serves web" evidence.
+    contributed: dict[str, float] = defaultdict(float)
+
+    def vote(
+        kind: str, weight: float, reason: str, *, rule: str | None = None,
+        cap: float | None = None,
+    ) -> None:
+        if rule is not None and cap is not None:
+            remaining = cap - contributed[rule]
+            if remaining <= 0:
+                return
+            weight = min(weight, remaining)
+            contributed[rule] += weight
         scores[kind] += weight
         if reason not in reasons[kind]:
             reasons[kind].append(reason)
@@ -179,15 +246,22 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
         # Nmap named no OS. The device's own DHCP vendor class can both settle the
         # family and supply a readable explanation, so reasons never read "None".
         for observation in observations:
-            if (observation.get("key") or "") != "dhcp_vendor_class":
+            key = observation.get("key") or ""
+            if key == "dhcp_vendor_class":
+                interpreted = classify_dhcp(observation.get("value"))
+            elif key == "dhcp_param_list":
+                interpreted = classify_param_list(observation.get("value"))
+            else:
                 continue
-            interpreted = classify_dhcp(observation.get("value"))
             if not interpreted:
                 continue
             os_evidence = f"{interpreted['label']} (from its DHCP request)"
             if family is None and interpreted["os_family"]:
                 family = interpreted["os_family"]
-            break
+            if key == "dhcp_vendor_class":
+                # A vendor class is the device naming itself, which beats a
+                # signature match, so stop looking once one is found.
+                break
     network_os_guess: str | None = None
 
     # -- this machine ---------------------------------------------------------
@@ -263,27 +337,44 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
         ).lower()
         signature = f"{name} {product}"
         if port in (631, 9100, 515) or any(term in signature for term in ("ipp", "jetdirect", "printer")):
-            vote("printer", 0.95, f"Printing service on {service.get('protocol')}/{port}")
+            vote("printer", 0.95, f"Printing service on {service.get('protocol')}/{port}",
+                 rule="printing", cap=1.10)
         if port == 3389 or "remote desktop" in signature:
             vote("computer", 0.55, "Remote Desktop service")
         if port in (445, 139):
-            vote("computer", 0.28, f"SMB/NetBIOS service on port {port}")
+            vote("computer", 0.28, f"SMB/NetBIOS service on port {port}",
+                 rule="smb", cap=0.35)
         if port == 62078:
             vote("phone", 0.60, "Apple device synchronization service")
         if port in (5060, 5061) or "sip" in name:
             vote("phone", 0.90, f"SIP/VoIP service on port {port}")
         if port in (25, 88, 389, 636, 3306, 5432, 6443, 1433, 27017):
-            vote("server", 0.45, f"Server-oriented service on port {port}")
+            vote("server", 0.45, f"Server-oriented service on port {port}",
+                 rule="server-service", cap=0.90)
         if port == 53:
             vote("server", 0.25, "DNS service")
-        if port in (554, 8554) or "rtsp" in name:
-            vote("camera", 0.70, f"RTSP video stream on port {port}")
+        # AirPlay is built on RTSP, so Nmap reports macOS ports 5000 and 7000 as
+        # "rtsp". Matching the service name alone classified every Mac with
+        # AirPlay enabled as a security camera -- and scored it higher than a real
+        # camera. Only the standard camera ports count.
+        if port in (554, 8554):
+            vote(
+                "camera", 0.70, f"RTSP video stream on port {port}",
+                rule="rtsp", cap=0.85,
+            )
+        elif port in AIRPLAY_PORTS and "rtsp" in name:
+            vote(
+                "computer", 0.45,
+                f"AirPlay receiver on port {port}, which Nmap reports as RTSP",
+                rule="airplay", cap=0.60,
+            )
         if any(term in signature for term in ("synology", "qnap", "truenas", "netatalk")):
             vote("storage", 0.85, f"NAS product signature: {service.get('product')}")
         if any(term in signature for term in ("routeros", "cisco ios", "junos", "fortios", "openwrt")):
             vote("network-device", 0.80, f"Network operating system: {service.get('product')}")
         if port in (8008, 8009, 8060, 7000) or "airplay" in signature:
-            vote("media", 0.70, f"Media streaming service on port {port}")
+            vote("media", 0.70, f"Media streaming service on port {port}",
+                 rule="media-service", cap=0.85)
         if port == 1883 or "mqtt" in name:
             vote("iot", 0.60, "MQTT broker or client")
     if {8008, 8009}.issubset(service_ports):
@@ -307,10 +398,31 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
         (("_axis-video", "_rtsp._tcp", "_onvif"),
          "camera", 0.70, "Camera advertisement"),
     )
+    # Only advertisements count towards what a device IS. Text from queries is
+    # excluded, because browsing for printers makes a laptop a printer client, not
+    # a printer.
+    advertised_text = " ".join(
+        f"{observation.get('key') or ''} {observation.get('value') or ''}"
+        for observation in observations
+        if (observation.get("key") or "") != "browsed_service"
+    ).lower()
     for terms, kind, weight, label in advertisement_rules:
-        matched = next((term for term in terms if term in observation_text), None)
+        matched = next((term for term in terms if term in advertised_text), None)
         if matched:
             vote(kind, weight, f"{label}: {matched}")
+
+    # A device that browses for services is a client, which points at a
+    # general-purpose machine rather than an appliance.
+    browsed = [
+        observation for observation in observations
+        if (observation.get("key") or "") == "browsed_service"
+    ]
+    if len(browsed) >= 3:
+        vote(
+            "computer", 0.35,
+            f"Browses for {len(browsed)} kinds of service, which is client behaviour",
+            rule="browsing", cap=0.35,
+        )
 
     for observation in observations:
         key = (observation.get("key") or "").lower()
@@ -338,6 +450,55 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
                 vote("router", 0.90, "SNMP description identifies a router")
             if "access point" in value:
                 vote("access-point", 0.95, "SNMP description identifies an access point")
+        elif key == "web_device_type":
+            # whatweb names its vendor plugins after what they detect, so a
+            # Brother-Printer match is the device telling us through its own
+            # management page.
+            kind = value.split(":", 1)[0].strip()
+            if kind in TYPE_ALIASES.values() or kind in (
+                "printer", "camera", "router", "switch", "firewall", "storage"
+            ):
+                vote(
+                    kind, 1.30,
+                    f"Its web interface identifies it: {observation.get('value')}",
+                    rule="web-type", cap=1.30,
+                )
+        elif key == "web_title":
+            # Appliance titles usually contain the model outright.
+            interpreted = classify_model(observation.get("value"))
+            if interpreted:
+                kind, label = interpreted
+                vote(
+                    kind, 1.20,
+                    f"Its web interface is titled {observation.get('value')!r} -- a {label}",
+                    rule="web-title", cap=1.20,
+                )
+        elif key == "smb_os":
+            # smb-os-discovery returns the OS the host reports for itself.
+            if "windows" in value and "samba" not in value:
+                vote("computer", 0.60, f"SMB reports {observation.get('value')}")
+            elif "samba" in value:
+                vote("computer", 0.25, f"SMB served by Samba: {observation.get('value')}")
+        elif key == "user_agent":
+            if "windows nt" in value:
+                vote("computer", 0.40, "HTTP User-Agent reports Windows")
+            elif "macintosh" in value:
+                vote("computer", 0.40, "HTTP User-Agent reports macOS")
+            elif "iphone" in value or "android" in value:
+                vote("phone", 0.45, f"HTTP User-Agent reports a mobile device")
+            elif "smart-tv" in value or "smarttv" in value or "netcast" in value:
+                vote("media", 0.55, "HTTP User-Agent reports a television")
+        elif key in ("mdns_model", "model"):
+            # The device stating its own hardware model. Nothing inferred beats it.
+            interpreted = classify_model(observation.get("value"))
+            if interpreted:
+                kind, label = interpreted
+                vote(
+                    kind, 1.50,
+                    f"Advertises its model over mDNS as {observation.get('value')} "
+                    f"-- a {label}",
+                    rule="model", cap=1.50,
+                )
         elif key == "dhcp_vendor_class":
             # The device names its own platform in its DHCP request. That is a
             # first-party statement, so it outranks an inferred OS fingerprint.
@@ -355,6 +516,25 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
                         f"DHCP request identifies {interpreted['label']} "
                         f"({interpreted['vendor_class']})",
                     )
+        elif key == "dhcp_param_list":
+            # Which options it asks for, in order. Decided by the DHCP client
+            # implementation, so it identifies the OS on devices that send no
+            # vendor class -- but it is an inference rather than a statement, so
+            # it is weighed below one.
+            interpreted = classify_param_list(observation.get("value"))
+            if interpreted:
+                if interpreted["device_type"]:
+                    vote(
+                        interpreted["device_type"], 0.55,
+                        f"Its DHCP option list matches {interpreted['label']}",
+                        rule="dhcp-param-list", cap=0.55,
+                    )
+                elif interpreted["os_family"] in ("windows", "linux", "apple"):
+                    vote(
+                        "computer", 0.40,
+                        f"Its DHCP option list matches {interpreted['label']}",
+                        rule="dhcp-param-list", cap=0.40,
+                    )
         elif key == "fingerprint":
             if "android" in value:
                 vote("phone", 0.55, f"Passive fingerprint: {observation.get('value')}")
@@ -368,6 +548,28 @@ def classify(data: dict[str, Any]) -> tuple[str, float, list[str], str | None]:
                 vote("media", 0.85, f"Passive fingerprint: {observation.get('value')}")
         elif key == "protocol_seen" and "cdp" in value:
             vote("network-device", 0.55, "Speaks Cisco Discovery Protocol")
+
+    # A device's operating system rules out whole categories. Appliances do not run
+    # macOS, and a general-purpose desktop OS is not what cameras and smart plugs
+    # ship with, so a service-shaped guess should not outrank the platform itself.
+    INCOMPATIBLE_WITH_OS: dict[str, tuple[str, ...]] = {
+        "apple": ("camera", "printer", "iot", "switch", "access-point", "router"),
+        "apple-mobile": ("camera", "printer", "iot", "switch", "access-point", "router"),
+        "windows": ("camera", "printer", "iot", "switch", "access-point", "router"),
+        "windows-server": ("camera", "printer", "iot", "switch", "access-point"),
+        # "computer" is deliberately absent: Nmap fingerprints generic Linux as
+        # OpenWrt often enough that penalising it here would undo the vendor-aware
+        # damping below and turn Linux laptops back into routers.
+        "network-os": ("camera", "printer", "phone"),
+    }
+    for incompatible in INCOMPATIBLE_WITH_OS.get(family or "", ()):
+        if scores.get(incompatible):
+            penalty = scores[incompatible] * 0.6
+            scores[incompatible] -= penalty
+            reasons[incompatible].append(
+                f"Down-weighted: a {incompatible} does not run "
+                f"{OS_FAMILY_LABELS.get(family, family)}"
+            )
 
     if network_os_guess:
         # Nmap fingerprints OpenWrt and generic Linux almost identically, so this

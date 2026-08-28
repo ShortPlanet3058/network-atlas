@@ -122,6 +122,7 @@ def import_nmap_xml(
             status=status,
             seen_at=observed_at,
             source="nmap",
+            name_source="reverse-dns",
         )
 
         os_matches = host.findall("os/osmatch")
@@ -195,10 +196,60 @@ def import_nmap_xml(
             )
 
         for script in host.findall("hostscript/script"):
-            output = clean_text(script.get("output"), 2000)
+            script_id = script.get("id", "script")
+            # These two scripts return structured elements naming the host
+            # outright, which is worth far more than their prose output.
+            if script_id == "smb-os-discovery":
+                elements = {
+                    element.get("key"): clean_text(element.text, 200)
+                    for element in script.findall("elem")
+                }
+                # Samba answers the OS question with the SMB dialect it speaks,
+                # always a "Windows N.N" string, whatever it is actually running.
+                # Taken at face value it labels every NAS and Android TV a Windows
+                # box, so it is recorded as the dialect it is.
+                samba = "samba" in (elements.get("lanmanager") or "").lower()
+                for element in script.findall("elem"):
+                    key, text = element.get("key"), clean_text(element.text, 200)
+                    if not text:
+                        continue
+                    # Nmap escapes the nulls SMB pads its fields with.
+                    text = text.replace("\\x00", "").strip()
+                    if not text:
+                        continue
+                    if key == "os":
+                        if samba:
+                            db.add_observation(
+                                device_id, "smb", "smb_dialect", text, 0.5, observed_at
+                            )
+                        else:
+                            db.add_observation(
+                                device_id, "smb", "smb_os", text, 0.9, observed_at
+                            )
+                    elif key == "server":
+                        if name := clean_hostname(text):
+                            db.add_observation(
+                                device_id, "smb", "smb_computer_name", name, 0.85, observed_at
+                            )
+                            db.set_hostname(device_id, name, "smb")
+                    elif key in ("domain_dns", "workgroup", "fqdn", "lanmanager"):
+                        db.add_observation(
+                            device_id, "smb", f"smb_{key}", text, 0.6, observed_at
+                        )
+            elif script_id == "nbstat":
+                for element in script.findall("elem"):
+                    if element.get("key") == "server_name":
+                        if name := clean_hostname(element.text):
+                            db.add_observation(
+                                device_id, "smb", "netbios_name", name, 0.85, observed_at
+                            )
+                            db.set_hostname(device_id, name, "netbios")
+            # SMB pads its fields with nulls, which Nmap escapes into the prose
+            # output as well. They are noise in a detail panel.
+            output = clean_text((script.get("output") or "").replace("\\x00", ""), 2000)
             if output:
                 db.add_observation(
-                    device_id, "nmap-nse", script.get("id", "script"), output, 0.65, observed_at
+                    device_id, "nmap-nse", script_id, output, 0.65, observed_at
                 )
         imported += 1
 
@@ -228,6 +279,7 @@ def import_avahi(db: AtlasDB, content: str, *, observed_at: str | None = None) -
             hostname=clean_hostname(hostname),
             seen_at=observed_at,
             source="mdns",
+            name_source="mdns",
         )
         description = f"{service_type} — {instance}"
         db.add_observation(device_id, "mdns", "service", description, 0.75, observed_at)

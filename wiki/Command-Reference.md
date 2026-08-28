@@ -114,6 +114,29 @@ make neighbours
 Instant and silent. Imports the kernel's ARP and IPv6 neighbour caches — the only
 collector that covers IPv6 by default.
 
+### `web-identity` — read management pages
+
+```bash
+network-atlas web-identity
+network-atlas web-identity --timeout 60
+```
+
+CLI: `web-identity [--timeout SECONDS]`
+
+For every device already known to have a web port open (80, 443, 8080, 8443, 8000,
+8888), fetches the landing page with `whatweb` and reads what the device says it
+is. This is where exact model numbers come from: a page titled
+`Brother DCP-L3550CDW series` names the printer far more precisely than any port
+pattern can.
+
+Only the landing page is requested. No login is attempted, no other path is
+fetched, and nothing is submitted. Titles that are plainly not model designations
+(`Loading...`, `Default Site`, `Welcome`) are recorded as evidence but never used
+as a device's model.
+
+Included automatically in `sweep`. Needs `whatweb`; the button is disabled in the
+web interface when it is missing.
+
 ### `sweep` — everything, in order
 
 ```bash

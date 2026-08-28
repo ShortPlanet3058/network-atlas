@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, netinfo, scheduler
+from . import __version__, netinfo, scheduler, webid
 from .collectors import PROFILE_LABELS, PROFILES
 from .db import AtlasDB
 from .jobs import JobError, JobManager
@@ -137,6 +137,7 @@ class AtlasHandler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "raw_packets": nmap_privileged(),
                         "passive_capture": can_capture(),
+                        "web_identity": webid.available(),
                     },
                     "profiles": [
                         {"id": profile, "label": PROFILE_LABELS[profile]} for profile in PROFILES

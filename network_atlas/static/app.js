@@ -40,6 +40,8 @@ const SCAN_KINDS = [
     detail: "Send nothing. Finds quiet devices and reads switch topology from LLDP/CDP." },
   { id: "names", title: "Resolve names", icon: "ic-pin", needsTarget: true,
     detail: "Look up names over DNS, mDNS and NetBIOS for devices already known." },
+  { id: "web-identity", title: "Read web pages", icon: "ic-globe", capability: "web_identity",
+    detail: "Opens the management page of devices with a web port and reads what it says they are. Fetches the landing page only." },
   { id: "neighbours", title: "Read caches", icon: "ic-clock",
     detail: "Instant. Imports the kernel ARP and IPv6 neighbour tables." },
   { id: "audit", title: "Check for issues", icon: "ic-shield-check",
@@ -994,6 +996,7 @@ function renderSchedule() {
     passive: "Listen passively",
     scan: "Quick sweep for who is online",
     names: "Resolve device names",
+    "web-identity": "Read web interfaces",
     audit: "Check for issues",
   };
   for (const entry of entries) {

@@ -38,6 +38,10 @@ CAPTURE_FILTER = (
     # TCP/IP stack fingerprint p0f reads and the endpoint pairs that make up the
     # traffic map.
     " or (tcp[tcpflags] & tcp-syn != 0)"
+    # Plaintext HTTP requests, for the User-Agent alone. Almost all traffic is
+    # HTTPS now, so this is a small addition that occasionally names a device
+    # outright; no response bodies are captured.
+    " or (tcp port 80 and (((ip[2:2] - ((ip[0]&0xf)<<2)) - ((tcp[12]&0xf0)>>2)) != 0))"
 )
 
 SAFE_INTERFACE = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
@@ -49,6 +53,38 @@ class PassiveError(RuntimeError):
 
 def _hostname(value: str, limit: int = 120) -> str | None:
     return clean_hostname(value, limit)
+
+
+# TXT keys that carry a hardware model, across the vendors that use mDNS.
+# "md" is Google Cast, "model"/"am" are Apple, "ty"/"usb_MDL"/"product" are IPP
+# printers, "mdl" is UPnP-style.
+_TXT_MODEL_KEYS = frozenset({"md", "model", "am", "ty", "usb_mdl", "product", "mdl"})
+# Keys holding a name a person chose, which beats a hostname every time.
+_TXT_NAME_KEYS = frozenset({"fn", "n", "friendlyname", "nm"})
+# Keys worth recording as evidence without driving classification.
+_TXT_DETAIL_KEYS = frozenset({
+    "usb_mfg", "mfg", "vn", "manufacturer", "os", "osxvers", "srcvers",
+    "fw", "fv", "version", "rs", "note", "location", "adminurl",
+})
+
+
+def _split_txt(value: str) -> list[str]:
+    """Split a tshark TXT field into its key=value strings.
+
+    tshark joins the strings of one TXT record with commas, and values can
+    themselves contain commas, so a split on "," followed by re-joining fragments
+    that carry no "=" keeps values intact.
+    """
+    if not value:
+        return []
+    pairs: list[str] = []
+    for fragment in value.split(","):
+        if "=" in fragment or not pairs:
+            pairs.append(fragment)
+        else:
+            # A continuation of the previous value rather than a new key.
+            pairs[-1] = f"{pairs[-1]},{fragment}"
+    return [pair for pair in pairs if pair.strip()]
 
 
 def _validate_interface(interface: str) -> str:
@@ -95,14 +131,22 @@ def capture(interface: str, duration: int, *, packet_limit: int = 20000) -> Path
     return target
 
 
-def _read(path: Path, display_filter: str, fields: list[str]) -> Iterator[list[str]]:
+def _read(
+    path: Path, display_filter: str, fields: list[str], *, occurrence: str = "f"
+) -> Iterator[list[str]]:
+    """Extract fields from a capture.
+
+    `occurrence` is tshark's: "f" takes the first value of a repeated field, "a"
+    takes all of them joined by commas. A DNS TXT record holds several strings and
+    the interesting one is rarely the first, so that read needs "a".
+    """
     tshark = shutil.which("tshark")
     if not tshark:
         return
     command = [tshark, "-r", str(path), "-Y", display_filter, "-T", "fields"]
     for field in fields:
         command.extend(["-e", field])
-    command.extend(["-E", "separator=\t", "-E", "occurrence=f"])
+    command.extend(["-E", "separator=\t", "-E", f"occurrence={occurrence}"])
     try:
         process = subprocess.run(
             command, capture_output=True, text=True, timeout=180, check=False
@@ -112,6 +156,20 @@ def _read(path: Path, display_filter: str, fields: list[str]) -> Iterator[list[s
     for line in process.stdout.splitlines():
         if line.strip():
             yield line.split("\t")
+
+
+def _request_list(raw: str) -> str:
+    """Normalise a DHCP option 55 list into a stable comma-separated signature.
+
+    tshark yields the items in the order the client sent them, which is the part
+    that carries the fingerprint, so the order is deliberately preserved.
+    """
+    items: list[str] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if part.isdigit() and len(items) < 32:
+            items.append(part)
+    return ",".join(items)
 
 
 def _field(row: list[str], index: int) -> str:
@@ -141,7 +199,8 @@ def analyze(path: Path) -> dict[str, Any]:
             key,
             {"mac": normalized, "addresses": set(), "hostnames": set(),
              "services": set(), "fingerprints": set(), "protocols": set(),
-             "vendor_classes": set()},
+             "vendor_classes": set(), "models": set(), "friendly_names": set(),
+             "user_agents": set(), "browsed_services": set(), "param_lists": set()},
         )
         if normalized and not entry["mac"]:
             entry["mac"] = normalized
@@ -156,12 +215,16 @@ def analyze(path: Path) -> dict[str, Any]:
             entry["protocols"].add("arp")
             counters["arp"] += 1
 
-    # DHCP: hostname plus a vendor-class fingerprint that names the OS family.
+    # DHCP: hostname, a vendor-class fingerprint that names the OS family, and
+    # the parameter request list. Option 55 is the order in which a client asks
+    # for options, which is decided by its DHCP implementation rather than by
+    # configuration, so it identifies the OS even on devices that send no vendor
+    # class at all. Every request is a broadcast, so this survives switches.
     dhcp_fields = [
         "dhcp.hw.mac_addr", "dhcp.ip.client", "dhcp.option.hostname",
-        "dhcp.option.vendor_class_id",
+        "dhcp.option.vendor_class_id", "dhcp.option.request_list_item",
     ]
-    for row in _read(path, "dhcp", dhcp_fields):
+    for row in _read(path, "dhcp", dhcp_fields, occurrence="a"):
         entry = host(_field(row, 0), _field(row, 1))
         if not entry:
             continue
@@ -172,32 +235,51 @@ def analyze(path: Path) -> dict[str, Any]:
             # Kept as its own field: the classifier interprets it, rather than
             # substring-matching a prose sentence.
             entry["vendor_classes"].add(vendor_class)
+        if request_list := _request_list(_field(row, 4)):
+            entry["param_lists"].add(request_list)
         counters["dhcp"] += 1
 
     # mDNS, LLMNR, NetBIOS and SSDP travel over IP and are routinely relayed or
     # reflected by access points and mesh nodes. The Ethernet source is then the
     # relay, not the origin, so these are keyed on the IP address alone; ARP is
     # what binds an address to a hardware address.
-    for row in _read(path, "mdns || llmnr", ["eth.src", "ip.src", "dns.qry.name"]):
+    #
+    # Responses only. A query says what a device is LOOKING FOR, not what it
+    # offers: every Mac and Android browses for "_pdl-datastream._tcp", and
+    # reading queries as advertisements classified them all as printers.
+    for row in _read(
+        path, "mdns && dns.flags.response == 1", ["eth.src", "ip.src", "dns.resp.name"],
+        occurrence="a",
+    ):
         entry = host(None, _field(row, 1))
         if not entry:
             continue
         entry["protocols"].add("mdns")
-        name = clean_text(_field(row, 2), 200)
-        if not name:
-            continue
-        # A service or enumeration query names a protocol, not a device. Only a
-        # plain host record such as "sherlock.local" is a usable device name.
-        is_service_query = (
-            name.startswith("_") or "._tcp" in name or "._udp" in name
-            or "_dns-sd" in name or "in-addr.arpa" in name
-        )
-        if is_service_query:
-            entry["services"].add(name)
-        elif name.endswith(".local"):
-            if resolved := _hostname(name, 200):
-                entry["hostnames"].add(resolved)
+        for name in dict.fromkeys(_field(row, 2).split(",")):
+            name = clean_text(name, 200)
+            if not name:
+                continue
+            is_service = (
+                name.startswith("_") or "._tcp" in name or "._udp" in name
+                or "_dns-sd" in name or "in-addr.arpa" in name
+            )
+            if is_service:
+                entry["services"].add(name)
+            elif name.endswith(".local"):
+                if resolved := _hostname(name, 200):
+                    entry["hostnames"].add(resolved)
         counters["mdns"] += 1
+
+    # Queries are still worth recording: a device browsing for printers is a
+    # client of printing, which is weak evidence that it is a computer or phone.
+    for row in _read(
+        path, "(mdns || llmnr) && dns.flags.response == 0", ["ip.src", "dns.qry.name"]
+    ):
+        entry = host(None, _field(row, 0))
+        name = clean_text(_field(row, 1), 200)
+        if entry and name and ("._tcp" in name or "._udp" in name):
+            entry["browsed_services"].add(name)
+            counters["mdns_query"] += 1
 
     # NetBIOS: names for Windows and SMB-capable hosts.
     for row in _read(path, "nbns", ["eth.src", "ip.src", "nbns.name"]):
@@ -373,6 +455,11 @@ def analyze(path: Path) -> dict[str, Any]:
                 "services": sorted(entry["services"]),
                 "fingerprints": sorted(entry["fingerprints"]),
                 "vendor_classes": sorted(entry["vendor_classes"]),
+                "models": sorted(entry["models"]),
+                "friendly_names": sorted(entry["friendly_names"]),
+                "user_agents": sorted(entry["user_agents"]),
+                "param_lists": sorted(entry["param_lists"]),
+                "browsed_services": sorted(entry["browsed_services"]),
                 "protocols": sorted(entry["protocols"]),
             }
             for entry in hosts.values()

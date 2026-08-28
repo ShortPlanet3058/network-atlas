@@ -10,6 +10,7 @@ from typing import Any
 from . import netinfo
 from .util import (
     STATUS_ONLINE,
+    clean_hostname,
     clean_text,
     normalize_mac,
     normalize_status,
@@ -77,6 +78,9 @@ CREATE TABLE IF NOT EXISTS observations (
     observed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_observations_device ON observations(device_id);
+-- observations also carries a UNIQUE index on (device_id, source, key, value),
+-- created by _dedupe_observations rather than here: an existing database has to
+-- have its duplicates collapsed before the index can be built over it.
 
 CREATE TABLE IF NOT EXISTS edges (
     id INTEGER PRIMARY KEY,
@@ -190,6 +194,44 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("devices", "wifi_ssid", "TEXT"),
     ("devices", "wifi_signal", "INTEGER"),
     ("devices", "wifi_seen_at", "TEXT"),
+    # Which kind of source supplied the current hostname, so a weaker one cannot
+    # overwrite a better one just by running last.
+    ("devices", "hostname_rank", "INTEGER"),
+)
+
+# How much a name is worth, highest first. A device has many names and they are
+# not equal: one a person typed beats one a service invented. Without this the
+# last collector to run wins, which is how a Shield ends up called
+# "SHIELD Android TV-192-168-1-65-esfileshare" instead of "Shield Android TV AF29".
+NAME_RANKS: dict[str, int] = {
+    "friendly": 90,      # mDNS TXT fn=, a name a person chose
+    "snmp": 85,          # sysName, which an administrator sets deliberately
+    "netbios": 80,       # the device's own configured Windows/SMB name
+    "smb": 80,
+    "dhcp": 70,          # the hostname it asks its DHCP server for
+    "reverse-dns": 60,   # a PTR record someone configured
+    "mdns": 40,          # an mDNS .local A record
+    "service": 20,       # a service instance name, often service-specific
+    "unknown": 10,
+}
+
+
+def name_rank(source: str | None) -> int:
+    return NAME_RANKS.get(source or "unknown", NAME_RANKS["unknown"])
+
+
+# Which observation carries which kind of name. Used to re-derive a display name
+# from scratch, so a device named badly by an older version of the ranking gets
+# repaired on the next collection instead of keeping the bad name forever.
+NAME_OBSERVATIONS: tuple[tuple[str, str], ...] = (
+    ("mdns_friendly_name", "friendly"),
+    ("snmp_sysname", "snmp"),
+    ("smb_computer_name", "smb"),
+    ("netbios_name", "netbios"),
+    ("requested_hostname", "dhcp"),
+    ("ptr_record", "reverse-dns"),
+    ("mdns_name", "mdns"),
+    ("advertised_name", "service"),
 )
 
 
@@ -300,8 +342,35 @@ class AtlasDB:
             }
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        self._dedupe_observations()
         self.conn.commit()
         self._purge_orphans()
+
+    def _dedupe_observations(self) -> None:
+        """Enforce one row per distinct observed fact.
+
+        Collectors re-observe the same facts on every scan, so without this the
+        table grows without bound and a device's detail panel fills with the same
+        line repeated. Re-observing instead refreshes the timestamp, which also
+        answers "when was this last confirmed".
+
+        Duplicates already stored are collapsed first, keeping the most recent of
+        each fact, because the index cannot be built over them.
+        """
+        if self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_observations_fact'"
+        ).fetchone():
+            return
+        self.conn.execute(
+            """DELETE FROM observations WHERE id NOT IN (
+                   SELECT MAX(id) FROM observations
+                    GROUP BY device_id, source, key, value
+               )"""
+        )
+        self.conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_fact
+                   ON observations(device_id, source, key, value)"""
+        )
 
     def close(self) -> None:
         self.conn.close()
@@ -354,6 +423,7 @@ class AtlasDB:
         source: str | None = None,
         is_local: bool = False,
         interface: str | None = None,
+        name_source: str | None = None,
     ) -> int:
         seen_at = seen_at or utc_now()
         status = normalize_status(status)
@@ -393,7 +463,7 @@ class AtlasDB:
             if status == STATUS_ONLINE:
                 fields.append("last_active=?")
                 values.append(seen_at)
-            for field, value in (("mac", mac), ("hostname", hostname), ("vendor", vendor)):
+            for field, value in (("mac", mac), ("vendor", vendor)):
                 if value:
                     fields.append(f"{field}=?")
                     values.append(clean_text(value))
@@ -405,17 +475,26 @@ class AtlasDB:
                 values.append(",".join(merged))
             values.append(device_id)
             self.conn.execute(f"UPDATE devices SET {','.join(fields)} WHERE id=?", values)
+            # Routed through the ranked setter so a service instance name cannot
+            # displace a better one simply by arriving later.
+            if hostname:
+                self.set_hostname(device_id, hostname, name_source or "unknown")
         else:
             cursor = self.conn.execute(
                 """INSERT INTO devices(mac,hostname,vendor,status,first_seen,last_seen,
                                       last_active,sources,is_local)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
-                    mac, clean_text(hostname), clean_text(vendor), status, seen_at, seen_at,
+                    mac, clean_hostname(hostname), clean_text(vendor), status, seen_at, seen_at,
                     seen_at if status == STATUS_ONLINE else None, source or "", int(is_local),
                 ),
             )
             device_id = int(cursor.lastrowid)
+            if hostname:
+                self.conn.execute(
+                    "UPDATE devices SET hostname_rank=? WHERE id=?",
+                    (name_rank(name_source), device_id),
+                )
 
         if address:
             # One IPv4 address cannot belong to two devices at once. When another
@@ -455,11 +534,84 @@ class AtlasDB:
                 )
         return device_id
 
+    def set_hostname(self, device_id: int, name: str | None, source: str) -> bool:
+        """Set a hostname only when its source is at least as good as the current one.
+
+        Returns whether the name was applied.
+        """
+        cleaned = clean_hostname(name)
+        if not cleaned:
+            return False
+        rank = name_rank(source)
+        row = self.conn.execute(
+            "SELECT hostname, hostname_rank FROM devices WHERE id=?", (device_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["hostname"] and (row["hostname_rank"] or 0) > rank:
+            return False
+        self.conn.execute(
+            "UPDATE devices SET hostname=?, hostname_rank=? WHERE id=?",
+            (cleaned, rank, device_id),
+        )
+        return True
+
+    def rerank_hostnames(self) -> int:
+        """Re-pick every device's display name from its observed names.
+
+        Names arrive from many collectors across many scans, so the best one is
+        often already recorded but was overwritten by whichever ran last. This
+        replays them in rank order, which both repairs old rows and keeps the
+        stored rank honest. Devices with no observed name are left untouched so a
+        name that only ever came from nmap is not thrown away.
+        """
+        keys = tuple(key for key, _ in NAME_OBSERVATIONS)
+        sources = dict(NAME_OBSERVATIONS)
+        placeholders = ",".join("?" * len(keys))
+        rows = self.conn.execute(
+            f"""SELECT device_id, key, value, MAX(observed_at) AS observed_at
+                  FROM observations
+                 WHERE key IN ({placeholders}) AND value IS NOT NULL AND value != ''
+                 GROUP BY device_id, key""",
+            keys,
+        ).fetchall()
+
+        best: dict[int, tuple[int, str]] = {}
+        for row in rows:
+            name = clean_hostname(row["value"])
+            if not name:
+                continue
+            rank = name_rank(sources[row["key"]])
+            current = best.get(row["device_id"])
+            if current is None or rank > current[0]:
+                best[row["device_id"]] = (rank, name)
+
+        changed = 0
+        for device_id, (rank, name) in best.items():
+            row = self.conn.execute(
+                "SELECT hostname, hostname_rank FROM devices WHERE id=?", (device_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            # A hostname of unknown provenance that outranks nothing still loses to
+            # a real observation, but a better-ranked stored name is left alone.
+            if row["hostname"] == name and (row["hostname_rank"] or 0) == rank:
+                continue
+            if row["hostname"] and (row["hostname_rank"] or 0) > rank:
+                continue
+            self.conn.execute(
+                "UPDATE devices SET hostname=?, hostname_rank=? WHERE id=?",
+                (name, rank, device_id),
+            )
+            changed += 1
+        self.conn.commit()
+        return changed
+
     def update_device(self, device_id: int, **fields: Any) -> None:
         allowed = {
             "hostname", "vendor", "device_type", "confidence", "os_name", "os_accuracy",
             "nmap_device_type", "model", "status", "manual_name", "manual_type",
-            "metadata_json", "os_family", "notes", "sources", "is_local",
+            "metadata_json", "os_family", "notes", "sources", "is_local", "hostname_rank",
             "owner", "location", "approved",
             "wifi_bssid", "wifi_ssid", "wifi_signal", "wifi_seen_at",
         }
@@ -554,7 +706,11 @@ class AtlasDB:
         observed_at: str | None = None,
     ) -> None:
         self.conn.execute(
-            "INSERT INTO observations(device_id,source,key,value,confidence,observed_at) VALUES(?,?,?,?,?,?)",
+            """INSERT INTO observations(device_id,source,key,value,confidence,observed_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(device_id,source,key,value) DO UPDATE SET
+                   observed_at=excluded.observed_at,
+                   confidence=MAX(confidence, excluded.confidence)""",
             (device_id, source, key, clean_text(value, 2000), confidence, observed_at or utc_now()),
         )
 
@@ -940,6 +1096,52 @@ class AtlasDB:
             (max(1, min(limit, 2000)),),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def resolve_address_conflicts(self) -> int:
+        """Enforce one online owner per address, repairing drift after the fact.
+
+        `ensure_device` refuses a contested address at write time, but only while
+        the existing holder is online -- and `mark_network_offline` marks a whole
+        range offline before every import, so a second device can take the address
+        during that window and both end up online afterwards. Comparing the two
+        here, after collection, is what keeps the invariant true over time.
+        """
+        conflicts = self.conn.execute(
+            """SELECT a.address FROM addresses a JOIN devices d ON d.id = a.device_id
+               WHERE d.status = ?
+               GROUP BY a.address HAVING COUNT(*) > 1""",
+            (STATUS_ONLINE,),
+        ).fetchall()
+        removed = 0
+        for row in conflicts:
+            address = row["address"]
+            holders = self.conn.execute(
+                """SELECT a.device_id, a.last_seen, d.mac
+                   FROM addresses a JOIN devices d ON d.id = a.device_id
+                   WHERE a.address = ? AND d.status = ?
+                   ORDER BY a.last_seen DESC, a.device_id DESC""",
+                (address, STATUS_ONLINE),
+            ).fetchall()
+            if len(holders) < 2:
+                continue
+            # Most recently seen on that address wins; it is the best available
+            # evidence of who actually answers there now.
+            winner, *losers = holders
+            for loser in losers:
+                self.conn.execute(
+                    "DELETE FROM addresses WHERE device_id=? AND address=?",
+                    (int(loser["device_id"]), address),
+                )
+                self.add_observation(
+                    int(loser["device_id"]), "conflict", "address_reassigned",
+                    f"Lost {address} to {winner['mac'] or 'another device'}, which was "
+                    f"seen there more recently",
+                    0.5,
+                )
+                removed += 1
+        if removed:
+            self.commit()
+        return removed
 
     def prune_ghosts(self) -> int:
         """Delete address-only rows left behind by scanning a whole range.
