@@ -19,7 +19,7 @@ To pull the image without running it:
 
 ```bash
 docker pull shortplanet/network-atlas          # :latest
-docker pull shortplanet/network-atlas:1.0.0    # a pinned version
+docker pull shortplanet/network-atlas:1.1.0    # a pinned version
 ```
 
 From a clone of the repository, `make docker-up` does the same as compose but
@@ -209,7 +209,7 @@ reports itself unavailable rather than failing.
 Pin a version if you want reproducible deployments:
 
 ```yaml
-ATLAS_IMAGE=shortplanet/network-atlas:1.0.0
+ATLAS_IMAGE=shortplanet/network-atlas:1.1.0
 ```
 
 Upgrade with `docker compose pull && docker compose up -d`. Your data volume is
