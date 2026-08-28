@@ -6,6 +6,8 @@ dynamic = ["version"]
 description = "Local network inventory and interactive topology map built around Kali discovery tools"
 requires-python = ">=3.11"
 dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.scripts]
 network-atlas = "network_atlas.cli:main"

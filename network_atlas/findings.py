@@ -322,6 +322,60 @@ def _container_isolation(db: AtlasDB, seen_at: str, seen: set[str]) -> int:
     return 1
 
 
+def _switch_topology_gap(db: AtlasDB, seen_at: str, seen: set[str]) -> int:
+    """Explain why the map shows one switch when the network has several.
+
+    LLDP and CDP are single-hop by design: the frames carry a destination address
+    in the IEEE range that switches must not forward, so listening passively hears
+    only the switch this machine is plugged into. Every switch beyond it is
+    invisible until something asks it directly. That looks like a fault in the map,
+    so it is worth stating plainly rather than leaving the operator to wonder.
+    """
+    switches = db.conn.execute(
+        """SELECT d.id, d.hostname,
+                  (SELECT COUNT(*) FROM addresses a WHERE a.device_id=d.id) AS addresses,
+                  (SELECT COUNT(*) FROM observations o
+                    WHERE o.device_id=d.id AND o.source='snmp') AS snmp_facts
+             FROM devices d
+            WHERE COALESCE(d.manual_type, d.device_type) IN ('switch','network-device')
+              AND d.status='online'
+              AND d.synthetic_key IS NULL"""
+    ).fetchall()
+    silent = [row for row in switches if not row["snmp_facts"] and row["addresses"]]
+    if not silent:
+        return 0
+    names = ", ".join(
+        str(row["hostname"] or f"device {row['id']}") for row in silent[:4]
+    )
+    upsert(
+        db, _key("switch-topology-gap"),
+        seen_keys=seen, device_id=silent[0]["id"], kind="switch-topology-gap",
+        severity=INFO,
+        title="Only the switch this machine is plugged into can be mapped",
+        detail=(
+            f"{len(silent)} switch(es) are known ({names}) but none has answered an "
+            "SNMP query. LLDP and CDP are single-hop protocols — the frames use a "
+            "destination address switches are required not to forward — so "
+            "listening on the wire reveals exactly one switch, however many the "
+            "network has. Port-level topology for the rest, and any unmanaged "
+            "switch hiding between them, can only be read by asking each managed "
+            "switch for its own neighbour and forwarding tables."
+        ),
+        remediation=(
+            "Enable read-only SNMP on the switch (SNMPv3 with an auth-only user is "
+            "enough; v2c works but sends the community in clear text), then copy "
+            "config.example.json to switches.json, fill in the host and the name of "
+            "the environment variable holding the credential, and run "
+            "`network-atlas snmp --config switches.json --crawl`. The crawl follows "
+            "each switch's LLDP neighbours to reach the ones behind it. Nothing is "
+            "written to the switch and no credential is stored in the file."
+        ),
+        evidence=f"{len(silent)} switch(es) with an address and no SNMP data",
+        seen_at=seen_at,
+    )
+    return 1
+
+
 def evaluate(db: AtlasDB, *, seen_at: str | None = None) -> dict[str, int]:
     """Run every inventory-derived rule and resolve findings that no longer apply."""
     seen_at = seen_at or utc_now()
@@ -333,6 +387,7 @@ def evaluate(db: AtlasDB, *, seen_at: str | None = None) -> dict[str, int]:
         "admin-interface": _default_credentials_hint(db, seen_at, seen),
         "ipv6-exposure": _ipv6_exposure(db, seen_at, seen),
         "container-isolated": _container_isolation(db, seen_at, seen),
+        "switch-topology-gap": _switch_topology_gap(db, seen_at, seen),
     }
     db.commit()
     # Inventory rules are fully re-derived each pass, so anything not re-observed
@@ -342,7 +397,7 @@ def evaluate(db: AtlasDB, *, seen_at: str | None = None) -> dict[str, int]:
         db,
         ("exposed-service", "cleartext-service", "unapproved-device",
          "unidentified-device", "admin-interface", "ipv6-exposure",
-         "container-isolated"),
+         "container-isolated", "switch-topology-gap"),
         seen,
     )
     return counts

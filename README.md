@@ -111,3 +111,7 @@ make install-hooks   # privacy checks before commit and push
 
 The application uses only the Python standard library. See
 [PRIVACY.md](PRIVACY.md) for how local data is stored and kept out of Git.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

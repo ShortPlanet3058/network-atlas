@@ -170,12 +170,40 @@ cp config.example.json switches.json    # then edit; it is gitignored
 make snmp
 ```
 
-CLI: `snmp --config PATH [--timeout N]`
+CLI: `snmp --config PATH [--timeout N] [--crawl] [--max-depth N]`
 
 Collects LLDP neighbours, switch-port forwarding tables, and the device's own ARP
 table — which lists every host it has resolved recently, including ones that
 ignore your probes. Credentials come from environment variables named in the
 config, never from the file itself.
+
+**`--crawl` reaches switches you did not list.** LLDP is single-hop by design: the
+frames carry a destination address switches are required not to forward, so
+listening on the wire finds exactly one switch — the one this machine is plugged
+into — however many the network has. But every switch hears its own neighbours, so
+asking each one in turn walks the whole fabric:
+
+```bash
+network-atlas snmp --config switches.json --crawl
+```
+
+A neighbour is followed only when it advertises bridge or router capability,
+publishes a management address, and that address is on a network this machine is
+actually attached to. Anything else is reported under `skipped` and never queried.
+Credentials are inherited from the switch that named the neighbour, since a site
+normally shares one read-only community or user; a neighbour with its own entry in
+`switches.json` is queried with that instead. The walk stops after three hops
+(`--max-depth`) or 32 devices.
+
+Without `--crawl`, only the switches listed in the config are queried.
+
+**Unmanaged switches are inferred.** A dumb switch has no address, answers nothing
+and appears in no scan, so the only evidence it exists is that several devices
+share one port of a managed switch with no LLDP neighbour on it. Those devices are
+attached to a node named `Unmanaged switch on <port>` instead of being drawn as
+several devices in one socket. The port facing the rest of the network is excluded
+by the gateway's hardware address appearing on it, so the whole network is not
+mistaken for a hidden switch.
 
 ### `arp`, `mdns` — legacy collectors
 
@@ -250,6 +278,7 @@ See [Docker](Docker) for the networking requirements.
 | `make docker-logs` | Follow container logs. |
 | `make docker-shell` | Shell inside the running container. |
 | `make docker-push` | Publish to Docker Hub. Multi-architecture when `buildx` is available. |
+| `make docker-describe` | Upload the Docker Hub page description. Needs `DOCKERHUB_TOKEN`. |
 | `make macvlan-create` | Create a macvlan network so the container gets its own LAN address. |
 | `make macvlan-remove` | Remove it. |
 
@@ -286,6 +315,7 @@ Override any of these on the command line: `make scan TARGET=10.0.0.0/24 PROFILE
 | `DOCKER_USER` | `shortplanet` | `docker-push`, `docker-pull` |
 | `TAG` | `latest` | `docker-push` |
 | `PLATFORMS` | `linux/amd64,linux/arm64` | `docker-push` |
+| `DOCKERHUB_TOKEN` | _(none)_ | `docker-describe` |
 
 `PORT` controls the native viewer and the container together — `make docker-up
 PORT=8766` moves both.

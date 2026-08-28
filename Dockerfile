@@ -105,5 +105,5 @@ LABEL org.opencontainers.image.title="Network Atlas" \
       org.opencontainers.image.url="https://github.com/ShortPlanet3058/network-atlas" \
       org.opencontainers.image.vendor="ShortPlanet3058" \
       org.opencontainers.image.authors="ShortPlanet3058" \
-      org.opencontainers.image.licenses="NOASSERTION" \
+      org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.base.name="docker.io/kalilinux/kali-rolling"

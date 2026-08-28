@@ -592,6 +592,7 @@ function treeRow(node, childCount) {
   title.append(el("strong", "", node.display_name));
   title.append(tinted(el("span", "badge", typeMeta(type).label), type));
   if (node.is_local) title.append(el("span", "badge you", "This device"));
+  if (node.inferred) title.append(el("span", "badge neutral", "Deduced"));
   if (childCount) title.append(el("span", "badge neutral", `${childCount} below`));
 
   const sub = el("div", "node-sub");
@@ -737,7 +738,12 @@ function renderDeviceTable() {
     wrap.append(glyph(type, "cell-glyph"));
     const text = el("div", "cell-device-text");
     text.append(el("strong", "", device.display_name));
-    text.append(el("small", "", device.is_local ? "This device" : (device.mac || "no hardware address")));
+    let subtitle = device.mac || "no hardware address";
+    if (device.is_local) subtitle = "This device";
+    // It has no address and no MAC because nothing ever answered for it: its
+    // existence is deduced from the devices behind it.
+    else if (device.inferred) subtitle = "Deduced from the devices behind it";
+    text.append(el("small", "", subtitle));
     wrap.append(text);
     nameCell.append(wrap);
 
@@ -750,7 +756,9 @@ function renderDeviceTable() {
       const extra = (device.addresses || []).length - 1;
       if (extra > 0) addressCell.append(el("small", "muted", ` +${extra}`));
     } else {
-      addressCell.append(el("span", "muted", "link-layer only"));
+      addressCell.append(
+        el("span", "muted", device.inferred ? "no address of its own" : "link-layer only")
+      );
     }
 
     const osLabel = OS_LABELS[device.os_family] || (device.os_name ? "Detected" : null);

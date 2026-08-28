@@ -253,6 +253,21 @@ Cross-building arm64 on an x86 machine runs under QEMU emulation, which is
 correct but slow — expect the package-installation step to take several times
 longer than a native build.
 
+### The repository description
+
+Docker Hub does not read the description from the image, so the text on the
+repository page is sent separately from `.github/dockerhub-description.md`:
+
+```bash
+export DOCKERHUB_TOKEN='dckr_pat_...'    # Read & Write
+make docker-describe
+```
+
+The registry login that `docker login` performs does not grant access to the Hub
+web API, which is why this needs a personal access token of its own. Create one at
+https://app.docker.com/settings/personal-access-tokens. It is read from the
+environment and never written to a file.
+
 To tag the release in Git as well:
 
 ```bash

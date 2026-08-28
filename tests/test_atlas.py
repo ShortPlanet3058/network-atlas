@@ -1502,6 +1502,247 @@ class AtlasTestCase(unittest.TestCase):
         }
         self.assertEqual(recorded.get("smb_os"), "Windows 10 Pro 19041")
 
+    def _snmp_config(self, host: str = "192.168.1.52") -> dict[str, str]:
+        """A minimal valid v2c config; the community never leaves the test."""
+        import os
+
+        os.environ["ATLAS_TEST_COMMUNITY"] = "public"
+        self.addCleanup(os.environ.pop, "ATLAS_TEST_COMMUNITY", None)
+        return {"host": host, "version": "2c", "community_env": "ATLAS_TEST_COMMUNITY"}
+
+    def _fake_snmp(self, tables: dict[str, dict[str, str]]) -> None:
+        """Replace the SNMP walk with canned tables for the duration of a test."""
+        from network_atlas import snmp as snmp_module
+
+        original = snmp_module._walk
+        self.addCleanup(setattr, snmp_module, "_walk", original)
+
+        def fake_walk(host: str, oid: str, config_dir: str, timeout: int) -> dict[str, str]:
+            return dict(tables.get(oid, {}))
+
+        snmp_module._walk = fake_walk
+
+    def test_several_devices_on_one_port_imply_an_unmanaged_switch(self) -> None:
+        """An unmanaged switch answers nothing, so sharing a port is the only clue."""
+        from network_atlas import snmp as snmp_module
+
+        self._fake_snmp({
+            snmp_module.SYS_NAME: {"0": "SG3428X"},
+            snmp_module.SYS_DESCR: {"0": "Pharos OS"},
+            snmp_module.IF_NAME: {"3": "Gi1/0/3", "7": "Gi1/0/7"},
+            snmp_module.BRIDGE_PORT_IFINDEX: {"3": "3", "7": "7"},
+            snmp_module.BRIDGE_FDB_PORT: {
+                # Three devices behind port 3, one behind port 7.
+                "0.170.187.204.0.0.1": "3",
+                "0.170.187.204.0.0.2": "3",
+                "0.170.187.204.0.0.3": "3",
+                "0.170.187.204.0.0.9": "7",
+            },
+        })
+        result = snmp_module.collect_switch(self.db, self._snmp_config())
+        self.assertEqual(result["inferred_switches"], 1)
+        # Three endpoints behind the hidden switch, one directly on the switch.
+        self.assertEqual(result["attachment_links"], 4)
+
+        hidden = self.db.conn.execute(
+            "SELECT id, hostname, device_type FROM devices WHERE synthetic_key IS NOT NULL"
+        ).fetchall()
+        self.assertEqual(len(hidden), 1)
+        self.assertEqual(hidden[0]["hostname"], "Unmanaged switch on Gi1/0/3")
+        self.assertEqual(hidden[0]["device_type"], "switch")
+
+        behind = self.db.conn.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE source_device_id=? AND edge_type=?",
+            (hidden[0]["id"], "inferred-attachment"),
+        ).fetchone()
+        self.assertEqual(behind["n"], 3)
+
+        # Running twice must not produce a second hidden switch.
+        snmp_module.collect_switch(self.db, self._snmp_config())
+        self.assertEqual(
+            self.db.conn.execute(
+                "SELECT COUNT(*) AS n FROM devices WHERE synthetic_key IS NOT NULL"
+            ).fetchone()["n"],
+            1,
+        )
+
+    def test_the_uplink_port_is_not_mistaken_for_a_hidden_switch(self) -> None:
+        """Otherwise the whole network hangs off one port of one switch."""
+        from network_atlas import snmp as snmp_module
+
+        # The gateway is known and its MAC is learned on port 1.
+        import_arp_scan(self.db, "192.168.1.1 aa:aa:aa:00:00:01 Router Vendor")
+        original_gateways = snmp_module.netinfo.gateways
+        self.addCleanup(setattr, snmp_module.netinfo, "gateways", original_gateways)
+        snmp_module.netinfo.gateways = lambda: [{"address": "192.168.1.1"}]
+
+        self._fake_snmp({
+            snmp_module.SYS_NAME: {"0": "SG3428X"},
+            snmp_module.IF_NAME: {"1": "Gi1/0/1", "4": "Gi1/0/4"},
+            snmp_module.BRIDGE_PORT_IFINDEX: {"1": "1", "4": "4"},
+            snmp_module.BRIDGE_FDB_PORT: {
+                "0.170.170.170.0.0.1": "1",   # the gateway
+                "0.187.187.187.0.0.2": "1",   # reached through the gateway
+                "0.187.187.187.0.0.3": "1",
+                "0.204.204.204.0.0.9": "4",
+            },
+        })
+        result = snmp_module.collect_switch(self.db, self._snmp_config())
+        self.assertEqual(result["inferred_switches"], 0)
+        self.assertEqual(result["attachment_links"], 1)
+        uplink = self.db.conn.execute(
+            "SELECT value FROM observations WHERE key='switch_uplink_port'"
+        ).fetchone()
+        self.assertIsNotNone(uplink)
+        self.assertIn("Gi1/0/1", uplink["value"])
+
+    def test_crawl_follows_lldp_management_addresses(self) -> None:
+        """LLDP is single-hop, so each switch must be asked for its own view."""
+        from network_atlas import snmp as snmp_module
+
+        seen: list[tuple[str, str | None]] = []
+        topology = {
+            "192.168.1.52": ["192.168.1.53"],
+            "192.168.1.53": ["192.168.1.54", "192.168.1.52"],
+            "192.168.1.54": [],
+        }
+
+        def fake_collect(db, config, *, timeout=30):
+            host = config["host"]
+            seen.append((host, config.get("community_env")))
+            return {
+                "host": host, "sys_name": host, "lldp_links": 1,
+                "attachment_links": 0, "inferred_switches": 0, "arp_entries": 0,
+                "neighbours": [
+                    {"address": address, "sys_name": None, "capabilities": "bridge"}
+                    for address in topology[host]
+                ],
+            }
+
+        original = snmp_module.collect_switch
+        self.addCleanup(setattr, snmp_module, "collect_switch", original)
+        snmp_module.collect_switch = fake_collect
+        self.addCleanup(
+            setattr, snmp_module.netinfo, "local_networks", snmp_module.netinfo.local_networks
+        )
+        snmp_module.netinfo.local_networks = lambda: [{"network": "192.168.1.0/24"}]
+
+        result = snmp_module.crawl_switches(
+            self.db, [{"host": "192.168.1.52", "community_env": "ATLAS_RO"}]
+        )
+        self.assertEqual(result["switches_reached"], 3)
+        self.assertEqual(
+            sorted(host for host, _ in seen),
+            ["192.168.1.52", "192.168.1.53", "192.168.1.54"],
+        )
+        # Credentials are inherited from the switch that named the neighbour.
+        self.assertTrue(all(env == "ATLAS_RO" for _, env in seen))
+
+    def test_crawl_refuses_to_leave_the_local_networks(self) -> None:
+        from network_atlas import snmp as snmp_module
+
+        def fake_collect(db, config, *, timeout=30):
+            return {
+                "host": config["host"], "sys_name": None, "lldp_links": 0,
+                "attachment_links": 0, "inferred_switches": 0, "arp_entries": 0,
+                "neighbours": [
+                    {"address": "203.0.113.9", "sys_name": None, "capabilities": "router"}
+                ],
+            }
+
+        original = snmp_module.collect_switch
+        self.addCleanup(setattr, snmp_module, "collect_switch", original)
+        snmp_module.collect_switch = fake_collect
+        self.addCleanup(
+            setattr, snmp_module.netinfo, "local_networks", snmp_module.netinfo.local_networks
+        )
+        snmp_module.netinfo.local_networks = lambda: [{"network": "192.168.1.0/24"}]
+
+        result = snmp_module.crawl_switches(self.db, [{"host": "192.168.1.52"}])
+        self.assertEqual(result["switches_reached"], 1)
+        self.assertEqual(
+            [entry["host"] for entry in result["skipped"]], ["203.0.113.9"]
+        )
+
+    def test_crawl_is_off_unless_asked_for(self) -> None:
+        """Querying a device nobody listed needs an explicit opt-in."""
+        from network_atlas import snmp as snmp_module
+
+        def fake_collect(db, config, *, timeout=30):
+            return {
+                "host": config["host"], "sys_name": None, "lldp_links": 0,
+                "attachment_links": 0, "inferred_switches": 0, "arp_entries": 0,
+                "neighbours": [
+                    {"address": "192.168.1.53", "sys_name": None, "capabilities": "bridge"}
+                ],
+            }
+
+        original = snmp_module.collect_switch
+        self.addCleanup(setattr, snmp_module, "collect_switch", original)
+        snmp_module.collect_switch = fake_collect
+        result = snmp_module.crawl_switches(
+            self.db, [{"host": "192.168.1.52"}], max_depth=0
+        )
+        self.assertEqual(result["switches_reached"], 1)
+
+    def test_lldp_management_address_decoding(self) -> None:
+        from network_atlas.snmp import _management_address_from_suffix as decode
+
+        self.assertEqual(decode("0.1.1.1.4.192.168.1.52"), "192.168.1.52")
+        self.assertEqual(
+            decode("0.1.1.2.16." + ".".join(["32", "1", "13", "184"] + ["0"] * 11 + ["1"])),
+            "2001:db8::1",
+        )
+        self.assertIsNone(decode("0.1.1.1.4.224.0.0.1"))
+        self.assertIsNone(decode("0.1.1.6.4.1.2.3.4"))
+        self.assertIsNone(decode("0.1.1"))
+
+    def test_a_silent_switch_explains_the_topology_gap(self) -> None:
+        from network_atlas import findings as findings_module
+
+        import_arp_scan(self.db, "10.23.45.52 aa:bb:cc:00:52:00 TP-Link")
+        device_id = self.db.find_device_by_address("10.23.45.52")
+        assert device_id is not None
+        self.db.set_manual_label("10.23.45.52", None, "switch")
+        findings_module.evaluate(self.db)
+        kinds = {row["kind"] for row in self.db.findings()}
+        self.assertIn("switch-topology-gap", kinds)
+
+        # Once the switch has answered SNMP, the gap is closed and the finding goes.
+        self.db.add_observation(device_id, "snmp", "snmp_sysname", "SG3428X", 0.9)
+        findings_module.evaluate(self.db)
+        open_kinds = {row["kind"] for row in self.db.findings() if not row["resolved_at"]}
+        self.assertNotIn("switch-topology-gap", open_kinds)
+
+    def test_an_inferred_switch_does_not_raise_the_topology_gap(self) -> None:
+        """An unmanaged switch can never answer SNMP, so it is not a gap."""
+        from network_atlas import findings as findings_module
+
+        self.db.ensure_inferred_device(
+            "unmanaged-switch:1:3",
+            hostname="Unmanaged switch on Gi1/0/3",
+            device_type="switch",
+        )
+        findings_module.evaluate(self.db)
+        kinds = {row["kind"] for row in self.db.findings()}
+        self.assertNotIn("switch-topology-gap", kinds)
+
+    def test_snmp_error_reports_the_cause_not_the_mib_warnings(self) -> None:
+        from network_atlas.snmp import _snmp_error
+
+        stderr = (
+            "MIB search path: /usr/share/snmp/mibs\n"
+            "Cannot find module (SNMPv2-MIB): At line 1 in (none)\n"
+            "Cannot find module (IF-MIB): At line 1 in (none)\n"
+            "Timeout: No Response from 192.168.1.52\n"
+        )
+        self.assertEqual(_snmp_error(stderr, ""), "Timeout: No Response from 192.168.1.52")
+        self.assertEqual(
+            _snmp_error("Cannot find module (IP-MIB): At line 1 in (none)", ""),
+            "no response",
+        )
+        self.assertEqual(_snmp_error("", "Authentication failure"), "Authentication failure")
+
     def test_real_world_network_and_media_signatures(self) -> None:
         openwrt = {"os_name": "OpenWrt 21.02 (Linux 5.4)", "services": [], "observations": []}
         yealink = {

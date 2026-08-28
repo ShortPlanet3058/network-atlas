@@ -27,7 +27,7 @@ from .collectors import (
 from .db import AtlasDB
 from .parsers import import_arp_scan, import_avahi, import_nmap_xml
 from .server import serve
-from .snmp import collect_switch, load_switches
+from .snmp import MAX_CRAWL_DEPTH, crawl_switches, load_switches
 from .util import can_capture, nmap_privileged
 
 
@@ -97,6 +97,14 @@ def build_parser() -> argparse.ArgumentParser:
     snmp = sub.add_parser("snmp", help="Collect LLDP and switch-port topology over read-only SNMP")
     snmp.add_argument("--config", type=Path, required=True, help="Switch configuration JSON")
     snmp.add_argument("--timeout", type=int, default=30, help="Timeout for each SNMP walk")
+    snmp.add_argument(
+        "--crawl", action="store_true",
+        help="Follow each switch's LLDP neighbours to reach switches beyond the configured ones",
+    )
+    snmp.add_argument(
+        "--max-depth", type=int, default=MAX_CRAWL_DEPTH,
+        help="How many LLDP hops a crawl may follow",
+    )
 
     nmap_import = sub.add_parser("import-nmap", help="Import an existing Nmap XML file")
     nmap_import.add_argument("path", type=Path)
@@ -272,11 +280,14 @@ def main(argv: list[str] | None = None) -> None:
             elif args.command == "mdns":
                 _print_result(collect_mdns(db, timeout=args.timeout))
             elif args.command == "snmp":
-                results = []
-                for switch in load_switches(args.config):
-                    results.append({"host": switch.get("host"), **collect_switch(db, switch, timeout=args.timeout)})
+                result = crawl_switches(
+                    db,
+                    load_switches(args.config),
+                    timeout=args.timeout,
+                    max_depth=args.max_depth if args.crawl else 0,
+                )
                 classify_all(db)
-                _print_result(results)
+                _print_result(result)
             elif args.command == "import-nmap":
                 count = _record_import(db, "nmap-import", args.path, import_nmap_xml)
                 _print_result({"imported_hosts": count})

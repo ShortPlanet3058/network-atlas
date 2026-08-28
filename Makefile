@@ -368,6 +368,9 @@ docker-push: ## Publish to Docker Hub, tagged :VERSION and :latest
 	echo "  $(REPOSITORY):latest"; \
 	echo "Users get it with: docker compose pull && docker compose up -d"
 
+docker-describe: ## Upload the Docker Hub repository description from .github/
+	@bash scripts/push-dockerhub-description.sh "$(REPOSITORY)"
+
 docker-push-single: ## Publish only this machine's architecture (no buildx needed)
 	@set -euo pipefail; \
 	if [[ -z "$(DOCKER_USER)" || -z "$(VERSION)" ]]; then \

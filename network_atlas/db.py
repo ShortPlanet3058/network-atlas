@@ -197,6 +197,10 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # Which kind of source supplied the current hostname, so a weaker one cannot
     # overwrite a better one just by running last.
     ("devices", "hostname_rank", "INTEGER"),
+    # Identity for a device inferred rather than observed -- an unmanaged switch
+    # has no address and no MAC of its own, so it needs a stable key to avoid
+    # being recreated on every scan.
+    ("devices", "synthetic_key", "TEXT"),
 )
 
 # How much a name is worth, highest first. A device has many names and they are
@@ -212,6 +216,7 @@ NAME_RANKS: dict[str, int] = {
     "reverse-dns": 60,   # a PTR record someone configured
     "mdns": 40,          # an mDNS .local A record
     "service": 20,       # a service instance name, often service-specific
+    "inferred": 15,      # a placeholder for a device deduced, never contacted
     "unknown": 10,
 }
 
@@ -343,6 +348,10 @@ class AtlasDB:
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         self._dedupe_observations()
+        self.conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_synthetic
+                   ON devices(synthetic_key) WHERE synthetic_key IS NOT NULL"""
+        )
         self.conn.commit()
         self._purge_orphans()
 
@@ -555,6 +564,45 @@ class AtlasDB:
             (cleaned, rank, device_id),
         )
         return True
+
+    def ensure_inferred_device(
+        self,
+        key: str,
+        *,
+        hostname: str,
+        device_type: str = "unknown",
+        confidence: float = 0.5,
+        seen_at: str | None = None,
+    ) -> int:
+        """Create or update a device that was deduced rather than contacted.
+
+        An unmanaged switch never answers anything: it has no address, no MAC of
+        its own and appears in no scan. It is only ever inferred from the traffic
+        of the devices behind it, so it is keyed on what implied it -- the managed
+        switch and the port -- rather than on anything it said.
+        """
+        seen_at = seen_at or utc_now()
+        row = self.conn.execute(
+            "SELECT id FROM devices WHERE synthetic_key=?", (key,)
+        ).fetchone()
+        if row:
+            device_id = int(row[0])
+            self.conn.execute(
+                "UPDATE devices SET last_seen=?, last_active=?, status=? WHERE id=?",
+                (seen_at, seen_at, STATUS_ONLINE, device_id),
+            )
+            return device_id
+        cursor = self.conn.execute(
+            """INSERT INTO devices(
+                   mac, hostname, hostname_rank, device_type, confidence, status,
+                   first_seen, last_seen, last_active, sources, synthetic_key
+               ) VALUES(NULL,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                clean_hostname(hostname), name_rank("inferred"), device_type, confidence,
+                STATUS_ONLINE, seen_at, seen_at, seen_at, "inferred", key,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def rerank_hostnames(self) -> int:
         """Re-pick every device's display name from its observed names.
@@ -851,6 +899,9 @@ class AtlasDB:
                 or item["mac"] or f"Device {item['id']}"
             )
             item["effective_type"] = item["manual_type"] or item["device_type"]
+            # Deduced, never contacted. Worth saying so: otherwise it reads as a
+            # device that failed to answer.
+            item["inferred"] = bool(item.get("synthetic_key"))
             item["primary_address"] = next(iter(item["addresses"]), None)
             item["source_list"] = [s for s in (item.get("sources") or "").split(",") if s]
             try:
@@ -905,7 +956,13 @@ class AtlasDB:
         # Strongest evidence last so it overwrites weaker inference.
         # Weakest evidence first so the strongest overwrites it. A Wi-Fi
         # association is authoritative for a wireless client.
-        for kind in ("attachment", "route", "cdp", "switch-port", "lldp", "wireless"):
+        # "inferred-attachment" sits above the gateway fallback and a routed hop
+        # because it places a device on a specific piece of hardware, but below a
+        # real switch port, which places it on a specific port of one.
+        for kind in (
+            "attachment", "route", "inferred-attachment", "cdp", "switch-port",
+            "lldp", "wireless",
+        ):
             for row in self.conn.execute(
                 "SELECT * FROM edges WHERE edge_type=? ORDER BY confidence", (kind,)
             ):

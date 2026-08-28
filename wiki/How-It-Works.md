@@ -48,7 +48,7 @@ is the layer that correlates and persists what they produce.
 | `addresses` | Addresses per device, IPv4 and IPv6, with the interface seen on |
 | `services` | Open ports with product, version and CPE |
 | `observations` | Every raw signal, with source, confidence and timestamp |
-| `edges` | Topology: attachment, route, LLDP, CDP, switch-port, wireless |
+| `edges` | Topology: attachment, route, LLDP, CDP, switch-port, wireless, inferred |
 | `findings` | Audit results, keyed so they persist and resolve |
 | `events` | The change log |
 | `flows` | Observed traffic pairs |
@@ -152,15 +152,39 @@ Real edges, in increasing order of authority:
 1. **`attachment`** — same routed segment as the gateway. The fallback that gives a
    flat network its shape.
 2. **`route`** — a traceroute hop.
-3. **`cdp`** / **`lldp`** — a neighbour that actually forwards traffic. Strongest,
-   because the device itself said so.
-4. **`switch-port`** — an SNMP forwarding-table entry.
-5. **`wireless`** — a Wi-Fi association.
+3. **`inferred-attachment`** — reached through a switch port that several devices
+   share. It places a device on a specific piece of hardware but cannot say which
+   port of it.
+4. **`cdp`** / **`lldp`** — a neighbour that actually forwards traffic.
+5. **`switch-port`** — an SNMP forwarding-table entry. Strongest, because it names
+   a specific port of a specific switch.
+6. **`wireless`** — a Wi-Fi association, authoritative for a wireless client.
 
 Nmap traceroute **cannot** supply topology on a flat segment: every host is one hop
 away, the hop list collapses, and no edge is recorded. That is why the gateway
 attachment edge is synthesised from the routing table — without it the map has no
 structure at all.
+
+### Why only one switch shows up
+
+LLDP and CDP frames are sent to a destination address in the IEEE reserved range
+`01:80:c2:00:00:00`–`0f`, which switches are required **not** to forward. That is
+the point of the protocol — a neighbour announcement should reach the neighbour and
+stop. So listening on the wire reveals exactly one switch, the one this machine is
+plugged into, however many the network has. It is not a gap in the capture.
+
+Every switch does hear its own neighbours, though, so the fabric can be walked by
+asking each switch in turn: `snmp --crawl` follows the management address each
+neighbour publishes in its LLDP data, one hop at a time. This needs read-only SNMP
+enabled on the switches; until then, Network Atlas raises an informational finding
+saying so rather than presenting a one-switch map as complete.
+
+An **unmanaged** switch can never be asked anything: no address, no agent, no
+presence in any scan. It is inferred instead, from the one trace it leaves — several
+devices sharing a single port of a managed switch with no LLDP neighbour on it. The
+port facing the rest of the network is excluded, because the gateway's own hardware
+address is learned there, and otherwise the entire network would be inferred as one
+hidden switch.
 
 The tree is built by letting stronger evidence overwrite weaker, then breaking any
 cycle so the renderer cannot recurse forever.
