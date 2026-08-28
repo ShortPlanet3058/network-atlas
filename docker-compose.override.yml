@@ -11,3 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Forwarded from the environment by `make docker-build`. Without them the
+        # image inherits the Kali base image's build date and git revision and
+        # reports them as its own. "unknown" is honest; a wrong date is not.
+        VCS_REF: ${VCS_REF:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}

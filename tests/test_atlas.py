@@ -1743,6 +1743,35 @@ class AtlasTestCase(unittest.TestCase):
         )
         self.assertEqual(_snmp_error("", "Authentication failure"), "Authentication failure")
 
+    def test_image_does_not_inherit_the_base_images_provenance(self) -> None:
+        """LABEL inherits anything not overridden.
+
+        Left alone, the published image reports the Kali base image's build date
+        and git revision as its own, which misstates where it came from. This is
+        invisible until someone inspects a built image, so it is guarded here.
+        """
+        dockerfile = ROOT / "Dockerfile"
+        if not dockerfile.is_file():
+            self.skipTest("no Dockerfile")
+        content = dockerfile.read_text()
+        for label in ("revision", "created"):
+            self.assertIn(
+                f"org.opencontainers.image.{label}=", content,
+                f"the image would inherit the base image's {label} label",
+            )
+        for argument in ("VCS_REF", "BUILD_DATE"):
+            self.assertIn(f"ARG {argument}", content)
+
+        makefile = (ROOT / "Makefile").read_text()
+        # Every path that produces a publishable image must stamp the same values.
+        publish_targets = makefile.count("--build-arg VCS_REF=")
+        self.assertGreaterEqual(publish_targets, 2, "a build path stamps no revision")
+
+        override = ROOT / "docker-compose.override.yml"
+        if override.is_file():
+            self.assertIn("VCS_REF", override.read_text(),
+                          "a compose build would stamp no revision")
+
     def test_real_world_network_and_media_signatures(self) -> None:
         openwrt = {"os_name": "OpenWrt 21.02 (Linux 5.4)", "services": [], "observations": []}
         yealink = {

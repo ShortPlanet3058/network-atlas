@@ -107,3 +107,13 @@ LABEL org.opencontainers.image.title="Network Atlas" \
       org.opencontainers.image.authors="ShortPlanet3058" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.base.name="docker.io/kalilinux/kali-rolling"
+
+# The base image sets its own created and revision labels, and LABEL inherits
+# anything not overridden. Left alone, this image reports Kali's build date and
+# Kali's git revision as its own, which misstates where it came from to anyone
+# reading its provenance. Defaults are honest placeholders rather than a wrong
+# date, so a build without these arguments claims nothing.
+ARG VCS_REF="unknown"
+ARG BUILD_DATE="unknown"
+LABEL org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"

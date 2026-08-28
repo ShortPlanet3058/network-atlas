@@ -37,6 +37,12 @@ TAG         ?= latest
 REPOSITORY  ?= $(if $(DOCKER_USER),$(DOCKER_USER)/$(IMAGE_NAME),$(IMAGE_NAME))
 IMAGE       ?= $(REPOSITORY):$(TAG)
 
+# Provenance stamped into the image. The Kali base image carries its own created
+# and revision labels, so without these the published image reports Kali's build
+# date and git revision as its own.
+VCS_REF     := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
+BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
 # arm64 is what makes a Raspberry Pi deployment possible; arm/v7 covers the
 # older 32-bit models.
 PLATFORMS   ?= linux/amd64,linux/arm64
@@ -310,7 +316,7 @@ docker-pull: ## Pull the published image instead of building it
 	docker pull "$${ATLAS_IMAGE:-$(IMAGE)}"
 
 docker-build: ## Build the container image locally
-	@$(COMPOSE) build
+	@VCS_REF="$(VCS_REF)" BUILD_DATE="$(BUILD_DATE)" $(COMPOSE) build
 
 docker-up: ## Start the container (host networking; full discovery on Linux only)
 	@set -euo pipefail; \
@@ -361,6 +367,8 @@ docker-push: ## Publish to Docker Hub, tagged :VERSION and :latest
 	docker buildx build --builder atlas-builder --platform "$(PLATFORMS)" \
 		--tag "$(REPOSITORY):$(VERSION)" --tag "$(REPOSITORY):latest" \
 		--label org.opencontainers.image.version="$(VERSION)" \
+		--build-arg VCS_REF="$(VCS_REF)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
 		--push .; \
 	echo ""; \
 	echo "Published:"; \
@@ -378,7 +386,9 @@ docker-push-single: ## Publish only this machine's architecture (no buildx neede
 	fi; \
 	echo "Building $(REPOSITORY):$(VERSION) for $$(uname -m) only."; \
 	echo "A Raspberry Pi will NOT be able to run this image."; \
-	docker build -t "$(REPOSITORY):$(VERSION)" -t "$(REPOSITORY):latest" .; \
+	docker build -t "$(REPOSITORY):$(VERSION)" -t "$(REPOSITORY):latest" \
+		--build-arg VCS_REF="$(VCS_REF)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" .; \
 	docker push "$(REPOSITORY):$(VERSION)"; \
 	docker push "$(REPOSITORY):latest"
 
