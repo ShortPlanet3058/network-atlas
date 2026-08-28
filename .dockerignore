@@ -1,0 +1,25 @@
+# Keep the build context small and free of local state.
+.git
+.githooks
+tests
+examples
+scripts
+*.md
+!README.md
+!PRIVACY.md
+Makefile
+Dockerfile
+docker-compose.yml
+.dockerignore
+__pycache__
+**/__pycache__
+*.py[cod]
+*.db
+*.db-*
+scans/
+data/
+*.pid
+*.log
+switches.json
+config.json
+.env

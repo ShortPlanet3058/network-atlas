@@ -1,0 +1,61 @@
+# Alternative to host networking, for Linux hosts.
+#
+# A macvlan network gives the container its own MAC and its own address on your
+# LAN, so it has genuine layer-2 presence: ARP scans, broadcast discovery and
+# LLDP/CDP all work, exactly as with host networking. The difference is that the
+# container is a distinct device on the network rather than sharing the host's
+# network namespace, which is tidier and keeps the viewer port off the host.
+#
+#   make macvlan-create                    # once, sizes itself from your LAN
+#   docker compose -f docker-compose.macvlan.yml up -d
+#
+# Two things to know:
+#   * macvlan needs the host kernel to own the physical interface, so this does
+#     nothing for Docker Desktop on macOS or Windows.
+#   * By design the host cannot talk to its own macvlan children over that
+#     interface, so reach the viewer at the container's LAN address, not
+#     127.0.0.1. `docker inspect` will tell you the address.
+
+services:
+  network-atlas:
+    image: ${ATLAS_IMAGE:-shortplanet/network-atlas:latest}
+    container_name: network-atlas-macvlan
+
+    networks:
+      atlas-lan:
+        # Optional: pin an address inside the range make macvlan-create reserved.
+        ipv4_address: ${ATLAS_IP:-}
+
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    cap_drop:
+      - ALL
+
+    volumes:
+      - atlas-data:/data
+
+    environment:
+      NETWORK_ATLAS_DB: /data/atlas.db
+
+    # The container has its own address here, so binding it is correct. The
+    # viewer still has no authentication: keep this off untrusted networks.
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${ATLAS_PORT:-8765}
+      - --allow-remote
+
+    restart: unless-stopped
+
+networks:
+  atlas-lan:
+    external: true
+    name: atlas-lan
+
+volumes:
+  atlas-data:
+    external: true
+    name: network-atlas_atlas-data

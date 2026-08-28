@@ -6,10 +6,26 @@ import ipaddress
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Iterable
 
 from .db import AtlasDB
-from .util import clean_text, normalize_mac, utc_now
+from .util import (
+    STATUS_ONLINE,
+    clean_hostname,
+    clean_text,
+    normalize_status,
+    utc_now,
+)
+
+
+AVAHI_ESCAPE = re.compile(r"\\(\d{3})")
+
+
+def unescape_avahi(value: str) -> str:
+    r"""Decode avahi's \NNN decimal escapes so names read as their real text."""
+    def replace(match: re.Match[str]) -> str:
+        code = int(match.group(1))
+        return chr(code) if 32 <= code < 127 else " "
+    return AVAHI_ESCAPE.sub(replace, value)
 
 
 ARP_LINE = re.compile(
@@ -37,7 +53,8 @@ def import_arp_scan(db: AtlasDB, content: str, *, observed_at: str | None = None
         if vendor.lower() in ("unknown", "unknown: locally administered", ""):
             vendor = ""
         device_id = db.ensure_device(
-            mac=match.group("mac"), address=ip, vendor=vendor or None, seen_at=observed_at
+            mac=match.group("mac"), address=ip, vendor=vendor or None,
+            seen_at=observed_at, source="arp",
         )
         if vendor:
             db.add_observation(device_id, "arp-scan", "oui_vendor", vendor, 0.3, observed_at)
@@ -73,10 +90,14 @@ def import_nmap_xml(
         data = Path(source).read_bytes()
     root = _safe_xml(data)
     imported = 0
+    skipped = 0
 
     for host in root.findall("host"):
         status_node = host.find("status")
         status = status_node.get("state", "unknown") if status_node is not None else "unknown"
+        if normalize_status(status) != STATUS_ONLINE:
+            skipped += 1
+            continue
         addresses = {node.get("addrtype"): node for node in host.findall("address")}
         ip_node = addresses.get("ipv4")
         if ip_node is None:
@@ -96,10 +117,11 @@ def import_nmap_xml(
             mac=mac_node.get("addr") if mac_node is not None else None,
             address=address,
             family=ip_node.get("addrtype", "ipv4"),
-            hostname=hostname,
+            hostname=clean_hostname(hostname),
             vendor=mac_node.get("vendor") if mac_node is not None else None,
-            status="online" if status == "up" else status,
+            status=status,
             seen_at=observed_at,
+            source="nmap",
         )
 
         os_matches = host.findall("os/osmatch")
@@ -154,9 +176,10 @@ def import_nmap_xml(
             hop_id = db.ensure_device(
                 address=hop_ip,
                 family="ipv6" if ":" in hop_ip else "ipv4",
-                hostname=hop.get("host"),
+                hostname=clean_hostname(hop.get("host")),
                 status="online",
                 seen_at=observed_at,
+                source="traceroute",
             )
             path_ids.append(hop_id)
         if path_ids and path_ids[-1] != device_id:
@@ -192,6 +215,8 @@ def import_avahi(db: AtlasDB, content: str, *, observed_at: str | None = None) -
         if len(fields) < 9 or fields[0] != "=":
             continue
         _marker, interface, protocol, instance, service_type, domain, hostname, address, port, *txt = fields
+        instance = unescape_avahi(instance)
+        hostname = unescape_avahi(hostname)
         try:
             ip = ipaddress.ip_address(address)
             port_number = int(port)
@@ -200,8 +225,9 @@ def import_avahi(db: AtlasDB, content: str, *, observed_at: str | None = None) -
         device_id = db.ensure_device(
             address=str(ip),
             family="ipv6" if ip.version == 6 else "ipv4",
-            hostname=hostname.rstrip("."),
+            hostname=clean_hostname(hostname),
             seen_at=observed_at,
+            source="mdns",
         )
         description = f"{service_type} — {instance}"
         db.add_observation(device_id, "mdns", "service", description, 0.75, observed_at)

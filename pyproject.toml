@@ -1,6 +1,8 @@
 [project]
 name = "network-atlas"
-version = "0.1.0"
+# Single-sourced from network_atlas/__init__.py so a release cannot ship with
+# two different version numbers.
+dynamic = ["version"]
 description = "Local network inventory and interactive topology map built around Kali discovery tools"
 requires-python = ">=3.11"
 dependencies = []
@@ -11,6 +13,9 @@ network-atlas = "network_atlas.cli:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "network_atlas.__version__"}
 
 [tool.setuptools.package-data]
 network_atlas = ["static/*"]

@@ -1,0 +1,13 @@
+# Present only in the repository, and merged automatically by docker compose.
+# Its single job is to build the image from source rather than pull a published
+# one, so `make docker-up` works in a clone with no registry access.
+#
+# Delete or rename this file to run the published image instead.
+
+services:
+  network-atlas:
+    # Tagged locally so building from source never shadows the published image.
+    image: ${ATLAS_IMAGE:-network-atlas:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile

@@ -27,6 +27,9 @@ LLDP_REM_CAP_ENABLED = "1.0.8802.1.1.2.1.4.1.1.12"
 BRIDGE_PORT_IFINDEX = "1.3.6.1.2.1.17.1.4.1.2"
 BRIDGE_FDB_PORT = "1.3.6.1.2.1.17.4.3.1.2"
 IF_NAME = "1.3.6.1.2.1.31.1.1.1.1"
+# ipNetToMediaPhysAddress: the device's own ARP/neighbour table. On a router this
+# is every host it has spoken to recently -- including ones that ignore our probes.
+IP_NET_TO_MEDIA_PHYS = "1.3.6.1.2.1.4.22.1.2"
 IF_DESCR = "1.3.6.1.2.1.2.2.1.2"
 
 
@@ -153,6 +156,61 @@ def _mac_from_fdb_suffix(suffix: str) -> str | None:
     return ":".join(f"{value:02x}" for value in octets)
 
 
+def _address_from_arp_suffix(suffix: str) -> str | None:
+    """The last four sub-identifiers of an ipNetToMedia OID are the IPv4 address."""
+    parts = suffix.split(".")
+    if len(parts) < 5:
+        return None
+    try:
+        octets = [int(part) for part in parts[-4:]]
+    except ValueError:
+        return None
+    if any(value < 0 or value > 255 for value in octets):
+        return None
+    candidate = ".".join(str(value) for value in octets)
+    try:
+        parsed = ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    if parsed.is_multicast or parsed.is_unspecified or parsed.is_loopback:
+        return None
+    return candidate
+
+
+def import_arp_table(
+    db: AtlasDB, host: str, config_dir: str, timeout: int, observed_at: str
+) -> int:
+    """Import the queried device's ARP table.
+
+    A router's ARP table is the closest portable equivalent of its DHCP lease
+    list: every address it has resolved recently, with the hardware address behind
+    it. Devices that firewall themselves still appear, because the router had to
+    resolve them to route their traffic.
+    """
+    try:
+        entries = _walk(host, IP_NET_TO_MEDIA_PHYS, config_dir, timeout)
+    except RuntimeError:
+        # Not every agent exposes the table; that is not a failure of the walk.
+        return 0
+    imported = 0
+    for suffix, value in entries.items():
+        address = _address_from_arp_suffix(suffix)
+        mac = _mac_from_chassis(value)
+        if not address or not mac:
+            continue
+        device_id = db.ensure_device(
+            mac=mac, address=address, status="online",
+            seen_at=observed_at, source="snmp-arp",
+        )
+        db.add_observation(
+            device_id, "snmp", "router_arp_entry",
+            f"{address} resolved to {mac} by {host}", 0.85, observed_at,
+        )
+        imported += 1
+    db.commit()
+    return imported
+
+
 def collect_switch(db: AtlasDB, config: dict[str, Any], *, timeout: int = 30) -> dict[str, int]:
     host = str(config.get("host", ""))
     if host.startswith("-") or not SAFE_HOST.match(host):
@@ -184,6 +242,8 @@ def collect_switch(db: AtlasDB, config: dict[str, Any], *, timeout: int = 30) ->
         )
         if sys_descr:
             db.add_observation(switch_id, "snmp", "snmp_sysdescr", sys_descr, 0.9, observed_at)
+
+        arp_entries = import_arp_table(db, host, temp_dir, timeout, observed_at)
 
         local_ids = _walk(host, LLDP_LOC_PORT_ID, temp_dir, timeout)
         local_desc = _walk(host, LLDP_LOC_PORT_DESC, temp_dir, timeout)
@@ -266,7 +326,11 @@ def collect_switch(db: AtlasDB, config: dict[str, Any], *, timeout: int = 30) ->
             attachment_links += 1
 
     db.commit()
-    return {"lldp_links": lldp_links, "attachment_links": attachment_links}
+    return {
+        "lldp_links": lldp_links,
+        "attachment_links": attachment_links,
+        "arp_entries": arp_entries,
+    }
 
 
 def load_switches(path: str | Path) -> list[dict[str, Any]]:

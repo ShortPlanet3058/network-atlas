@@ -1,14 +1,42 @@
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
-from network_atlas.classifier import classify, classify_all
+import xml.etree.ElementTree as ET
+
+from network_atlas import (
+    collectors,
+    events,
+    findings,
+    fingerprint,
+    ingest,
+    netinfo,
+    jobs,
+    oui,
+    passive,
+    scheduler,
+    tlsaudit,
+    vulns,
+    wireless,
+)
+from network_atlas.classifier import classify, classify_all, os_family
 from network_atlas.db import AtlasDB
-from network_atlas.parsers import import_arp_scan, import_avahi, import_nmap_xml
-from network_atlas.snmp import parse_walk
-from network_atlas.util import normalize_mac, validate_target
+from network_atlas.parsers import (
+    import_arp_scan,
+    import_avahi,
+    import_nmap_xml,
+    unescape_avahi,
+)
+from network_atlas.snmp import _address_from_arp_suffix, parse_walk
+from network_atlas.util import (
+    clean_hostname,
+    normalize_mac,
+    utc_now,
+    validate_target,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -28,9 +56,11 @@ class AtlasTestCase(unittest.TestCase):
         classify_all(self.db)
         self.assertEqual(count, 3)
         devices = self.db.devices()
-        printer = next(item for item in devices if item["hostname"] == "office-printer.lab.internal")
-        router = next(item for item in devices if item["hostname"] == "gateway.lab.internal")
-        server = next(item for item in devices if item["hostname"] == "home-server.lab.internal")
+        # Hostnames inside a local zone are stored as their first label, so every
+        # collector agrees on one name and swapping sources logs no false change.
+        printer = next(item for item in devices if item["hostname"] == "office-printer")
+        router = next(item for item in devices if item["hostname"] == "gateway")
+        server = next(item for item in devices if item["hostname"] == "home-server")
         self.assertEqual(printer["effective_type"], "printer")
         self.assertGreater(printer["confidence"], 0.9)
         self.assertEqual(router["effective_type"], "router")
@@ -67,9 +97,1066 @@ class AtlasTestCase(unittest.TestCase):
         import_arp_scan(self.db, "10.1.1.5 00:11:22:33:44:66 Vendor Two")
         changed = self.db.mark_network_offline(validate_target("10.23.45.0/24"))
         self.assertEqual(changed, 1)
-        statuses = {item["mac"]: item["status"] for item in self.db.devices()}
+        statuses = {
+            item["mac"]: item["status"]
+            for item in self.db.devices(online_only=False)
+        }
         self.assertEqual(statuses["00:11:22:33:44:55"], "offline")
         self.assertEqual(statuses["00:11:22:33:44:66"], "online")
+        # The default view is the point of the change: only live hosts appear.
+        self.assertEqual(
+            [item["mac"] for item in self.db.devices()], ["00:11:22:33:44:66"]
+        )
+
+    def test_down_hosts_are_not_recorded_as_devices(self) -> None:
+        xml = (
+            '<?xml version="1.0"?><nmaprun>'
+            '<host><status state="up"/><address addr="10.23.45.5" addrtype="ipv4"/></host>'
+            '<host><status state="down"/><address addr="10.23.45.6" addrtype="ipv4"/></host>'
+            '<host><status state="down"/><address addr="10.23.45.7" addrtype="ipv4"/></host>'
+            "</nmaprun>"
+        )
+        self.assertEqual(import_nmap_xml(self.db, xml.encode()), 1)
+        addresses = [item["primary_address"] for item in self.db.devices()]
+        self.assertEqual(addresses, ["10.23.45.5"])
+
+    def test_prune_removes_scan_residue_but_keeps_identified_hosts(self) -> None:
+        residue = self.db.ensure_device(address="10.23.45.9", status="offline")
+        known = self.db.ensure_device(
+            mac="00:11:22:33:44:77", address="10.23.45.10", status="offline"
+        )
+        self.db.commit()
+        self.assertEqual(self.db.prune_ghosts(), 1)
+        remaining = {item["id"] for item in self.db.devices(online_only=False)}
+        self.assertNotIn(residue, remaining)
+        self.assertIn(known, remaining)
+
+    def test_os_family_disambiguates_cisco_ios_from_apple(self) -> None:
+        self.assertEqual(os_family("Cisco IOS 15.2"), "network-os")
+        self.assertEqual(os_family("iPhone OS 15"), "apple-mobile")
+        self.assertEqual(
+            os_family("Apple macOS 11 (Big Sur) - 13 (Ventura) or iOS 16"), "apple"
+        )
+
+    def test_network_os_guess_yields_to_a_named_device(self) -> None:
+        # A Linux host mis-fingerprinted as OpenWrt must not become a router when
+        # its own hostname and vendor say otherwise.
+        kind, _confidence, _why, _family = classify({
+            "os_name": "OpenWrt 21.02 (Linux 5.4)",
+            "hostname": "debian-4",
+            "vendor": "Dell Inc.",
+            "services": [],
+            "observations": [],
+        })
+        self.assertEqual(kind, "computer")
+        # With no competing evidence the same fingerprint is decisive.
+        kind, _confidence, _why, _family = classify({
+            "os_name": "OpenWrt 21.02 (Linux 5.4)",
+            "services": [],
+            "observations": [],
+        })
+        self.assertEqual(kind, "router")
+
+    def test_placeholder_and_multicast_macs_are_rejected(self) -> None:
+        self.assertIsNone(normalize_mac("00:00:00:00:00:00"))
+        self.assertIsNone(normalize_mac("ff:ff:ff:ff:ff:ff"))
+        self.assertIsNone(normalize_mac("01:00:0c:cc:cc:cc"))
+        self.assertEqual(normalize_mac("B4-22-00-B6-84-5B"), "b4:22:00:b6:84:5b")
+
+    def test_nmap_hostnames_are_cleaned_like_every_other_source(self) -> None:
+        # Nmap reports the PTR name verbatim while mDNS and NetBIOS are cleaned.
+        # Left inconsistent, the sources overwrite each other on every scan and each
+        # swap logs a spurious "name changed" event.
+        xml = (
+            '<?xml version="1.0"?><nmaprun><host><status state="up"/>'
+            '<address addr="10.23.45.5" addrtype="ipv4"/>'
+            '<hostnames><hostname name="workstation.home" type="PTR"/></hostnames>'
+            "</host></nmaprun>"
+        )
+        import_nmap_xml(self.db, xml.encode())
+        self.assertEqual(self.db.devices()[0]["hostname"], "workstation")
+
+    def test_hostname_cleaning_strips_zones_and_junk(self) -> None:
+        self.assertEqual(clean_hostname("sherlock.local"), "sherlock")
+        self.assertEqual(clean_hostname("vault.lyrs.lan"), "vault")
+        self.assertEqual(clean_hostname("WS-KAKASHI<20>"), "WS-KAKASHI")
+        self.assertIsNone(clean_hostname("*"))
+        self.assertIsNone(clean_hostname("__MSBROWSE__"))
+        # A public FQDN keeps its domain, which is meaningful outside a local zone.
+        self.assertEqual(clean_hostname("nas.example.com"), "nas.example.com")
+
+    def test_avahi_escapes_are_decoded(self) -> None:
+        self.assertEqual(unescape_avahi(r"MacBook\032Air"), "MacBook Air")
+        self.assertEqual(unescape_avahi(r"\091LG\093\032webOS"), "[LG] webOS")
+
+    def test_oui_lookup_and_randomized_detection(self) -> None:
+        # Skips cleanly on a host without the Nmap or arp-scan vendor database.
+        if oui.size() == 0:
+            self.skipTest("no local OUI database")
+        self.assertTrue(oui.lookup("b4:22:00:b6:84:5b"))
+        self.assertTrue(oui.is_randomized("ce:70:13:a3:53:47"))
+        self.assertIsNone(oui.lookup("ce:70:13:a3:53:47"))
+
+    def test_orphaned_child_rows_do_not_break_later_collectors(self) -> None:
+        # Another client deleting a device without foreign keys enabled leaves an
+        # addresses row behind. ensure_device used to crash reading its vanished row.
+        device_id = self.db.ensure_device(mac="00:11:22:33:44:88", address="10.23.45.20")
+        self.db.commit()
+        self.db.conn.execute("PRAGMA foreign_keys = OFF")
+        self.db.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+        self.db.conn.commit()
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM addresses").fetchone()[0], 1
+        )
+        # Re-observing the same address must succeed rather than raise.
+        again = self.db.ensure_device(address="10.23.45.20", status="online")
+        self.db.commit()
+        self.assertIsInstance(again, int)
+        self.assertEqual(self.db._purge_orphans(), 0)
+
+    def test_purge_orphans_clears_every_child_table(self) -> None:
+        device_id = self.db.ensure_device(mac="00:11:22:33:44:99", address="10.23.45.21")
+        other_id = self.db.ensure_device(mac="00:11:22:33:44:aa", address="10.23.45.22")
+        self.db.add_service(device_id, "tcp", 80, name="http")
+        self.db.add_observation(device_id, "test", "key", "value")
+        self.db.add_edge(device_id, other_id, "attachment")
+        self.db.commit()
+        self.db.conn.execute("PRAGMA foreign_keys = OFF")
+        self.db.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
+        self.db.conn.commit()
+        self.assertEqual(self.db._purge_orphans(), 4)
+        for table in ("addresses", "services", "observations", "edges"):
+            remaining = self.db.conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE "
+                + ("source_device_id=?" if table == "edges" else "device_id=?"),
+                (device_id,),
+            ).fetchone()[0]
+            self.assertEqual(remaining, 0, table)
+
+    def test_a_second_claimant_cannot_take_a_live_address(self) -> None:
+        # A relayed or spoofed announcement must not fork the map into two copies
+        # of one host, which is what produced a phantom second gateway.
+        holder = self.db.ensure_device(
+            mac="00:11:22:33:44:01", address="10.23.45.1", status="online"
+        )
+        intruder = self.db.ensure_device(
+            mac="00:11:22:33:44:02", address="10.23.45.1", status="online"
+        )
+        self.db.commit()
+        self.assertNotEqual(holder, intruder)
+        owners = [
+            row["device_id"]
+            for row in self.db.conn.execute(
+                "SELECT device_id FROM addresses WHERE address='10.23.45.1'"
+            )
+        ]
+        self.assertEqual(owners, [holder])
+        # The contested claim is kept as evidence rather than silently dropped.
+        conflicts = self.db.conn.execute(
+            "SELECT value FROM observations WHERE device_id=? AND key='address_claim'",
+            (intruder,),
+        ).fetchall()
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("00:11:22:33:44:01", conflicts[0]["value"])
+
+    def test_an_offline_holder_releases_its_address(self) -> None:
+        holder = self.db.ensure_device(
+            mac="00:11:22:33:44:03", address="10.23.45.2", status="online"
+        )
+        self.db.update_device(holder, status="offline")
+        self.db.commit()
+        successor = self.db.ensure_device(
+            mac="00:11:22:33:44:04", address="10.23.45.2", status="online"
+        )
+        self.db.commit()
+        owners = {
+            row["device_id"]
+            for row in self.db.conn.execute(
+                "SELECT device_id FROM addresses WHERE address='10.23.45.2'"
+            )
+        }
+        self.assertIn(successor, owners)
+
+    def test_hostname_rules_handle_run_together_manufacturer_names(self) -> None:
+        # Vendors ship names with the words jammed together, so a word-boundary
+        # match alone misses them; ambiguous short tokens must still be bounded.
+        expected = {
+            "SHIELDANDROIDTV": "media",
+            "LGwebOSTV": "media",
+            "FIRETVSTICK": "media",
+            "chromecast-audio": "media",
+            "DISKSTATION": "storage",
+            "PLAYSTATION5": "game-console",
+            "MacBook-Air-de-raph": "computer",
+            "JULIE-PC": "computer",
+            "iPhone-de-Paul": "phone",
+            # Negatives: these must not be swept up by a loose substring.
+            "tvm-build-server": "server",
+            "paddle-01": "unknown",
+        }
+        for hostname, kind in expected.items():
+            actual, _confidence, _why, _family = classify(
+                {"hostname": hostname, "services": [], "observations": []}
+            )
+            self.assertEqual(actual, kind, hostname)
+
+    def _replay(self, lines):
+        """Feed verbatim Nmap output through the progress parser."""
+        state, events = {}, []
+        for line in lines:
+            collectors._report_line(
+                line, lambda percent, detail: events.append((percent, detail)), state
+            )
+        return events
+
+    def test_every_nmap_progress_line_produces_an_event(self) -> None:
+        # Progress is regex-driven off Nmap's stdout and breaks silently; these are
+        # verbatim lines from Nmap 7.99 under -v --stats-every.
+        lines = (
+            "Initiating ARP Ping Scan at 17:10",
+            "Scanning 17 hosts [200 ports/host]",
+            "Initiating SYN Stealth Scan at 17:10",
+            "Discovered open port 443/tcp on 192.168.1.1",
+            "Completed ARP Ping Scan at 17:10, 0.06s elapsed (1 total hosts)",
+            "Stats: 0:00:14 elapsed; 0 hosts completed (17 up), 17 undergoing Service Scan",
+            "Service scan Timing: About 47.06% done; ETC: 17:12 (0:00:07 remaining)",
+            "Initiating OS detection (try #1) against 3 hosts",
+            "Initiating Traceroute at 17:12",
+            "NSE: Script scanning 3 hosts.",
+            "Nmap scan report for 192.168.1.50",
+            "Nmap done: 8 IP addresses (3 hosts up) scanned in 95.20 seconds",
+        )
+        for line in lines:
+            self.assertTrue(self._replay([line]), f"no event for: {line}")
+
+    def test_progress_is_phase_scaled_and_monotonic(self) -> None:
+        # Nmap's percentage is per phase, so reporting it raw would show 47% with
+        # six phases still to run. The bar must scale it and never go backwards.
+        events = self._replay([
+            "Initiating ARP Ping Scan at 20:30",
+            "Initiating SYN Stealth Scan at 20:30",
+            "SYN Stealth Scan Timing: About 60.00% done; ETC: 20:32",
+            "Completed SYN Stealth Scan at 20:31, 30s elapsed (200 total ports)",
+            "Initiating Service scan at 20:31",
+            "Service scan Timing: About 50.00% done; ETC: 20:33",
+            "Initiating OS detection (try #1) against 3 hosts",
+            "Initiating Traceroute at 20:33",
+            "NSE: Script scanning 3 hosts.",
+            "Nmap done: 8 IP addresses (3 hosts up) scanned in 95.20 seconds",
+        ])
+        bars = [percent for percent, _detail in events if percent >= 0]
+        self.assertEqual(bars, sorted(bars), "progress went backwards")
+        self.assertEqual(bars[-1], 100.0)
+        # A phase at 60% must not be reported as 60% of the whole scan.
+        syn = next(p for p, d in events if "SYN Stealth Scan: 60%" in d)
+        self.assertLess(syn, 45.0)
+
+    def test_unreachable_hosts_are_not_announced_as_found(self) -> None:
+        # --reason writes "[host down, received no-response]", so an exact match on
+        # "[host down]" silently announced every dead address as a discovery.
+        for line in (
+            "Nmap scan report for 192.168.1.48 [host down, received no-response]",
+            "Nmap scan report for 192.168.1.1 [host down]",
+        ):
+            details = [detail for _percent, detail in self._replay([line])]
+            self.assertFalse(
+                [d for d in details if "Found host" in d], f"announced a down host: {line}"
+            )
+        found = [d for _p, d in self._replay(["Nmap scan report for 192.168.1.50"])]
+        self.assertIn("Found host 192.168.1.50", found)
+
+    def test_scan_profiles_use_raw_packet_flags_when_available(self) -> None:
+        for profile in collectors.PROFILES:
+            command = collectors.nmap_command("10.23.45.0/24", profile)
+            self.assertIn("10.23.45.0/24", command)
+            self.assertIn("-oX", command)
+            # Progress reporting must be requested or the viewer shows nothing.
+            self.assertIn("--stats-every", command)
+        # XML must go to a file when one is given: `-oX -` takes stdout, which is
+        # where Nmap reports progress, and silences it completely.
+        to_file = collectors.nmap_command("10.23.45.0/24", "standard", xml_path="/tmp/x.xml")
+        self.assertEqual(to_file[to_file.index("-oX") + 1], "/tmp/x.xml")
+        with self.assertRaises(ValueError):
+            collectors.nmap_command("10.23.45.0/24", "nonsense")
+
+    def test_passive_error_paths_raise_a_real_exception(self) -> None:
+        # These raise sites are only reached at runtime, so a missing class name
+        # imports cleanly and then fails mid-scan with a NameError instead.
+        original = passive.shutil.which
+        try:
+            passive.shutil.which = lambda name: None
+            with self.assertRaises(passive.PassiveError):
+                passive.capture("eth0", 10)
+        finally:
+            passive.shutil.which = original
+        self.assertTrue(issubclass(passive.PassiveError, RuntimeError))
+
+    def test_passive_rejects_unsafe_interface_names(self) -> None:
+        for bad in ("eth0; rm -rf /", "eth0 && curl evil", "", "eth0|nc"):
+            with self.assertRaises(ValueError):
+                passive._validate_interface(bad)
+        self.assertEqual(passive._validate_interface("eth0"), "eth0")
+        self.assertEqual(passive._validate_interface("wlp3s0"), "wlp3s0")
+
+    def test_job_validation_rejects_bad_requests_before_queueing(self) -> None:
+        # A malformed request must be refused outright, not accepted and then
+        # failed once it starts, and never masked by the concurrency check.
+        for kind, parameters in (
+            ("scan", {"profile": "turbo"}),
+            ("passive", {"duration": 99999}),
+            ("passive", {"interface": "eth0; rm -rf /"}),
+        ):
+            with self.assertRaises((jobs.UnknownJobError, ValueError)):
+                jobs._validate(kind, parameters)
+        with self.assertRaises(ValueError):
+            jobs._validate("scan", {"target": "8.8.8.0/24"})
+        # Valid requests pass untouched.
+        jobs._validate("scan", {"profile": "deep", "target": "192.168.1.0/24"})
+        jobs._validate("passive", {"duration": 60, "interface": "eth0"})
+
+    def test_sweep_stages_map_onto_separate_progress_bands(self) -> None:
+        # Each stage of a sweep reports its own 0-100%, so without banding the bar
+        # restarts at every stage instead of advancing once end to end.
+        class Recorder:
+            def __init__(self) -> None:
+                self.seen: list[float] = []
+
+            def report(self, percent: float, detail: str) -> None:
+                if percent >= 0:
+                    self.seen.append(percent)
+
+        recorder = Recorder()
+        for low, high in ((6.0, 62.0), (62.0, 74.0), (74.0, 99.0)):
+            band = jobs._band(recorder, low, high)
+            for stage_percent in (0, 25, 50, 100):
+                band(stage_percent, "stage")
+            self.assertAlmostEqual(recorder.seen[-1], high)
+        self.assertEqual(recorder.seen, sorted(recorder.seen), "progress went backwards")
+        # A stage reporting out-of-range values must stay inside its band.
+        band = jobs._band(recorder, 10.0, 20.0)
+        band(-500, "detail-only")
+        band(9999, "over")
+        self.assertLessEqual(recorder.seen[-1], 20.0)
+
+    def test_link_local_only_rows_fold_into_the_device_that_owns_the_mac(self) -> None:
+        # A router is reached over IPv4 and over IPv6 link-local. If the link-local
+        # side lands before its MAC is known it becomes a second row, and the map
+        # shows one router twice.
+        router = self.db.ensure_device(
+            mac="38:07:16:12:bc:ef", address="192.168.1.254", status="online"
+        )
+        stray = self.db.ensure_device(
+            address="fe80::3a07:16ff:fe12:bcef", family="ipv6", status="online"
+        )
+        self.db.add_observation(stray, "route", "default_gateway", "IPv6 default", 0.9)
+        self.db.commit()
+        self.assertNotEqual(router, stray)
+
+        original = ingest.netinfo.neighbours
+        try:
+            ingest.netinfo.neighbours = lambda: [{
+                "address": "fe80::3a07:16ff:fe12:bcef",
+                "mac": "38:07:16:12:bc:ef",
+                "interface": "eth0", "family": "ipv6",
+                "state": "REACHABLE", "reachable": True, "link_local": True,
+            }]
+            self.assertEqual(ingest.fold_link_local_duplicates(self.db), 1)
+        finally:
+            ingest.netinfo.neighbours = original
+
+        remaining = {item["id"] for item in self.db.devices(online_only=False)}
+        self.assertNotIn(stray, remaining)
+        self.assertIn(router, remaining)
+        merged = next(item for item in self.db.devices() if item["id"] == router)
+        self.assertIn("fe80::3a07:16ff:fe12:bcef", merged["addresses"])
+        self.assertIn("192.168.1.254", merged["addresses"])
+        # Evidence from the folded row must survive the merge.
+        keys = [row["key"] for row in self.db.conn.execute(
+            "SELECT key FROM observations WHERE device_id=?", (router,))]
+        self.assertIn("default_gateway", keys)
+
+    def test_a_routable_address_is_never_folded_away(self) -> None:
+        # Only link-local-only rows may fold; a real address means a real device.
+        keeper = self.db.ensure_device(address="192.168.1.77", status="online")
+        self.db.ensure_device(mac="38:07:16:12:bc:e0", address="192.168.1.78", status="online")
+        self.db.commit()
+        original = ingest.netinfo.neighbours
+        try:
+            ingest.netinfo.neighbours = lambda: [{
+                "address": "192.168.1.77", "mac": "38:07:16:12:bc:e0",
+                "interface": "eth0", "family": "ipv4",
+                "state": "REACHABLE", "reachable": True, "link_local": False,
+            }]
+            self.assertEqual(ingest.fold_link_local_duplicates(self.db), 0)
+        finally:
+            ingest.netinfo.neighbours = original
+        self.assertIn(keeper, {item["id"] for item in self.db.devices(online_only=False)})
+
+    def test_hidden_attribute_beats_component_display_rules(self) -> None:
+        """The viewer hides panels with the `hidden` attribute, which only works
+        through a user-agent `display: none` that ANY author `display` outranks.
+        Several components set their own (`.modal` is `display: grid`), so without
+        an explicit override the scan dialog's full-screen backdrop never went away.
+        """
+        static = ROOT / "network_atlas" / "static"
+        css = (static / "style.css").read_text()
+        html = (static / "index.html").read_text()
+        app = (static / "app.js").read_text()
+
+        self.assertRegex(
+            css, r"\[hidden\]\s*\{[^}]*display:\s*none\s*!important",
+            "missing the [hidden] override; elements with an author display will not hide",
+        )
+
+        # Every element toggled via `hidden` must still have a display to return to.
+        toggled = set(re.findall(r'\$\("#([a-zA-Z0-9_-]+)"\)\.hidden', app))
+        toggled |= set(re.findall(r'id="([a-zA-Z0-9_-]+)"[^>]*\shidden', html))
+        self.assertIn("scan-modal", toggled)
+        self.assertIn("drawer", toggled)
+        for element_id in toggled:
+            self.assertRegex(
+                html, r'id="' + re.escape(element_id) + r'"',
+                f"#{element_id} is toggled in JS but absent from the markup",
+            )
+
+    # -- events -----------------------------------------------------------
+    def _seed_pair(self):
+        first = self.db.ensure_device(
+            mac="00:11:22:33:aa:01", address="10.23.45.11", hostname="alpha", status="online"
+        )
+        second = self.db.ensure_device(
+            mac="00:11:22:33:aa:02", address="10.23.45.12", hostname="beta", status="online"
+        )
+        self.db.commit()
+        return first, second
+
+    def test_events_detect_arrival_departure_and_ports(self) -> None:
+        first, _second = self._seed_pair()
+        before = events.snapshot(self.db)
+        # A new device, a port on an existing one, and one going away.
+        self.db.ensure_device(mac="00:11:22:33:aa:03", address="10.23.45.13", status="online")
+        self.db.add_service(first, "tcp", 22, name="ssh")
+        self.db.update_device(_second, status="offline")
+        self.db.commit()
+        emitted = {event["kind"] for event in events.diff(self.db, before)}
+        self.assertIn("device-appeared", emitted)
+        self.assertIn("port-opened", emitted)
+        self.assertIn("device-left", emitted)
+        # And they are persisted for the timeline.
+        self.assertGreaterEqual(len(self.db.events()), 3)
+
+    def test_events_flag_an_address_changing_hands(self) -> None:
+        # The security-relevant transition: one address, a different MAC.
+        original = self.db.ensure_device(
+            mac="00:11:22:33:bb:01", address="10.23.45.20", status="online"
+        )
+        self.db.commit()
+        before = events.snapshot(self.db)
+        self.db.update_device(original, status="offline")
+        self.db.commit()
+        successor = self.db.ensure_device(
+            mac="00:11:22:33:bb:02", address="10.23.45.20", status="online"
+        )
+        self.db.commit()
+        self.assertNotEqual(original, successor)
+        kinds = {event["kind"] for event in events.diff(self.db, before)}
+        self.assertIn("address-reassigned", kinds)
+        record = next(
+            item for item in self.db.events() if item["kind"] == "address-reassigned"
+        )
+        self.assertEqual(record["severity"], "medium")
+
+    def test_no_events_when_nothing_changed(self) -> None:
+        self._seed_pair()
+        before = events.snapshot(self.db)
+        self.assertEqual(events.diff(self.db, before), [])
+
+    # -- findings ---------------------------------------------------------
+    def test_exposed_service_findings_carry_a_remediation(self) -> None:
+        device_id = self.db.ensure_device(
+            mac="00:11:22:33:cc:01", address="10.23.45.30", hostname="nas", status="online"
+        )
+        self.db.add_service(device_id, "tcp", 23, name="telnet")
+        self.db.commit()
+        findings.evaluate(self.db)
+        rows = [row for row in self.db.findings() if row["kind"] == "exposed-service"]
+        self.assertTrue(rows)
+        telnet = next(row for row in rows if row["port"] == 23)
+        self.assertEqual(telnet["severity"], "high")
+        # Every finding must say what to do about it, or it is just noise.
+        for row in self.db.findings():
+            self.assertTrue(row["remediation"], f"{row['kind']} has no remediation")
+            self.assertTrue(row["detail"], f"{row['kind']} has no explanation")
+
+    def test_findings_resolve_when_the_issue_goes_away(self) -> None:
+        device_id = self.db.ensure_device(
+            mac="00:11:22:33:cc:02", address="10.23.45.31", status="online"
+        )
+        self.db.add_service(device_id, "tcp", 23, name="telnet")
+        self.db.commit()
+        findings.evaluate(self.db)
+        opened = next(row for row in self.db.findings() if row["port"] == 23)
+        first_seen = opened["first_seen"]
+
+        # Re-running keeps first_seen rather than resetting the age of the issue.
+        findings.evaluate(self.db)
+        again = next(row for row in self.db.findings() if row["port"] == 23)
+        self.assertEqual(again["first_seen"], first_seen)
+
+        self.db.conn.execute("DELETE FROM services WHERE device_id=?", (device_id,))
+        self.db.commit()
+        findings.evaluate(self.db)
+        self.assertFalse([row for row in self.db.findings() if row["port"] == 23])
+        resolved = self.db.findings(include_resolved=True)
+        self.assertTrue([row for row in resolved if row["resolved_at"]])
+
+    def test_unapproved_rule_stays_quiet_until_approval_is_used(self) -> None:
+        self.db.ensure_device(mac="00:11:22:33:cc:03", address="10.23.45.32", status="online")
+        self.db.commit()
+        findings.evaluate(self.db)
+        self.assertFalse(
+            [row for row in self.db.findings() if row["kind"] == "unapproved-device"],
+            "should not nag before the user has approved anything",
+        )
+        approved = self.db.ensure_device(
+            mac="00:11:22:33:cc:04", address="10.23.45.33", status="online"
+        )
+        self.db.update_device(approved, approved=1)
+        self.db.commit()
+        findings.evaluate(self.db)
+        self.assertTrue(
+            [row for row in self.db.findings() if row["kind"] == "unapproved-device"]
+        )
+
+    def test_muted_findings_are_hidden_but_kept(self) -> None:
+        device_id = self.db.ensure_device(
+            mac="00:11:22:33:cc:05", address="10.23.45.34", status="online"
+        )
+        self.db.add_service(device_id, "tcp", 23, name="telnet")
+        self.db.commit()
+        findings.evaluate(self.db)
+        row = next(item for item in self.db.findings() if item["port"] == 23)
+        self.db.set_finding_muted(row["id"], True)
+        self.assertFalse([item for item in self.db.findings() if item["port"] == 23])
+        self.assertTrue(
+            [item for item in self.db.findings(include_muted=True) if item["port"] == 23]
+        )
+
+    # -- exploit correlation ---------------------------------------------
+    def test_product_normalization_and_candidate_terms(self) -> None:
+        self.assertEqual(vulns._normalize_product("OpenSSH 8.4p1 Debian"), "openssh")
+        self.assertEqual(vulns._normalize_product("Samba smbd 4.13.13"), "samba")
+        # Apache alone is ambiguous, so the daemon word is kept as a fallback term.
+        self.assertIn("apache httpd", vulns._candidate_terms("Apache httpd 2.4.51"))
+        # The recognisable product can hide in a parenthetical.
+        self.assertIn("webmin", vulns._candidate_terms("MiniServ 1.830 (Webmin httpd)"))
+        # Too generic to correlate at all.
+        self.assertEqual(vulns._candidate_terms("tcpwrapped"), [])
+
+    def test_version_matching_rejects_a_bare_major(self) -> None:
+        # A bare "4" once matched "Sambar Server 4.x" -- a different product -- and
+        # was reported as an exact version match.
+        self.assertFalse(vulns._version_matches("4", "Sambar Server 4.x/5.0 - Default Password"))
+        self.assertTrue(vulns._version_matches("2.3.4", "vsftpd 2.3.4 - Backdoor"))
+        self.assertFalse(vulns._version_matches("2.3.4", "vsftpd 2.0.5 - Memory Consumption"))
+        # Patch suffixes and series matches are both meaningful.
+        self.assertTrue(vulns._version_matches("9.6p1", "OpenSSH 9.6 - Something"))
+        self.assertTrue(vulns._version_matches("1.4.53", "lighttpd 1.4.x - Denial of Service"))
+
+    def test_exploit_records_are_ranked_by_product_prefix(self) -> None:
+        records = [
+            {"Title": "Ingress-NGINX 4.11.0 - Remote Code Execution"},
+            {"Title": "Nginx 1.20 - Local Privilege Escalation"},
+        ]
+        ranked = vulns._rank(records, "nginx")
+        self.assertTrue(ranked[0]["Title"].lower().startswith("nginx"))
+
+    # -- TLS --------------------------------------------------------------
+    def test_tls_findings_from_sslscan_xml(self) -> None:
+        xml = """<document><ssltest host="10.23.45.40" port="443">
+          <protocol type="ssl" version="3" enabled="1"/>
+          <protocol type="tls" version="1.2" enabled="1"/>
+          <heartbleed sslversion="TLSv1.2" vulnerable="1"/>
+          <cipher status="accepted" sslversion="TLSv1.2" bits="56"
+                  cipher="DES-CBC-SHA" strength="weak"/>
+          <certificate type="short">
+            <signature-algorithm>sha1WithRSAEncryption</signature-algorithm>
+            <subject>nas.lan</subject>
+            <self-signed>true</self-signed>
+            <expired>true</expired>
+            <not-valid-after>Jan  1 00:00:00 2020 GMT</not-valid-after>
+          </certificate>
+        </ssltest></document>"""
+        device_id = self.db.ensure_device(
+            mac="00:11:22:33:dd:01", address="10.23.45.40", hostname="nas", status="online"
+        )
+        self.db.commit()
+        created = tlsaudit._evaluate(
+            self.db, device_id, "nas", "10.23.45.40", 443,
+            ET.fromstring(xml), "2026-01-01T00:00:00Z",
+        )
+        self.db.commit()
+        self.assertGreaterEqual(created, 5)
+        kinds = {row["kind"] for row in self.db.findings()}
+        self.assertIn("tls-protocol", kinds)
+        self.assertIn("tls-vulnerability", kinds)
+        self.assertIn("tls-ciphers", kinds)
+        self.assertIn("tls-certificate", kinds)
+        heartbleed = next(
+            row for row in self.db.findings() if row["kind"] == "tls-vulnerability"
+        )
+        self.assertEqual(heartbleed["severity"], "high")
+
+    # -- p0f --------------------------------------------------------------
+    def test_p0f_output_is_parsed_and_attributed(self) -> None:
+        output = """
+.-[ 10.23.45.50/443 -> 10.23.45.1/52778 (syn+ack) ]-
+|
+| server   = 10.23.45.50/443
+| os       = Linux 5.x
+| dist     = 0
+| link     = Ethernet or modem
+|
+`----
+"""
+        original = fingerprint.subprocess.run
+        try:
+            fingerprint.subprocess.run = lambda *a, **k: type(
+                "R", (), {"stdout": output, "stderr": "", "returncode": 0}
+            )()
+            parsed = fingerprint.analyze(ROOT / "README.md")
+        finally:
+            fingerprint.subprocess.run = original
+        self.assertIn("10.23.45.50", parsed)
+        self.assertEqual(parsed["10.23.45.50"]["os"], "Linux 5.x")
+        self.assertEqual(parsed["10.23.45.50"]["role"], "server")
+        # A server-side fingerprint describes the remote host, so it scores higher.
+        entries = fingerprint.to_observations(parsed)["10.23.45.50"]
+        os_entry = next(item for item in entries if item[0] == "p0f_os")
+        self.assertGreater(os_entry[2], 0.6)
+
+    def test_dhcp_vendor_class_identifies_platforms(self) -> None:
+        # DHCP is broadcast, so unlike TCP this signal survives a switch -- it is
+        # the passive OS evidence that actually reaches us on a normal network.
+        expected = {
+            "MSFT 5.0": ("windows", None),
+            "android-dhcp-13": ("android", "phone"),
+            "dhcpcd-9.4.1": ("linux", None),
+            "udhcp 1.36.1": ("embedded", "iot"),
+            "AAPLBM": ("apple", None),
+            "Roku": (None, "media"),
+            "PlayStation 5": (None, "game-console"),
+            "HP LaserJet 400": (None, "printer"),
+            "ArubaAP": (None, "access-point"),
+        }
+        for vendor_class, (family, kind) in expected.items():
+            result = fingerprint.classify_dhcp(vendor_class)
+            self.assertIsNotNone(result, vendor_class)
+            self.assertEqual(result["os_family"], family, vendor_class)
+            self.assertEqual(result["device_type"], kind, vendor_class)
+        # An unknown string is common and must not be forced into a guess.
+        self.assertIsNone(fingerprint.classify_dhcp("some-unknown-client"))
+        self.assertIsNone(fingerprint.classify_dhcp(""))
+        self.assertIsNone(fingerprint.classify_dhcp(None))
+
+    def test_classification_from_dhcp_alone(self) -> None:
+        for vendor_class, kind in (
+            ("android-dhcp-13", "phone"),
+            ("Roku", "media"),
+            ("HP LaserJet 400", "printer"),
+            ("PlayStation 5", "game-console"),
+            ("MSFT 5.0", "computer"),
+        ):
+            actual, _confidence, why, _family = classify({
+                "services": [],
+                "observations": [{"key": "dhcp_vendor_class", "value": vendor_class}],
+            })
+            self.assertEqual(actual, kind, vendor_class)
+            # A reason that reads "detected: None" is worse than no reason.
+            self.assertNotIn("None", why[0], vendor_class)
+
+    def test_classification_reasons_never_say_none(self) -> None:
+        # Reasons are shown to the user verbatim in the device drawer.
+        for data in (
+            {"observations": [{"key": "dhcp_vendor_class", "value": "AAPLBM"}]},
+            {"observations": [{"key": "dhcp_vendor_class", "value": "udhcp 1.0"}]},
+            {"os_name": "Android 13", "observations": []},
+            {"observations": []},
+        ):
+            data.setdefault("services", [])
+            _kind, _confidence, why, _family = classify(data)
+            for reason in why:
+                self.assertNotIn("None", reason, data)
+
+    # -- container image --------------------------------------------------
+    def test_dockerfile_installs_every_tool_the_code_shells_out_to(self) -> None:
+        """The image must not drift from the code's external dependencies.
+
+        Every collector resolves its binary with shutil.which() at runtime and
+        degrades quietly when it is absent, so a tool missing from the image would
+        not fail the build or raise -- the feature would just silently never work.
+        """
+        dockerfile = ROOT / "Dockerfile"
+        if not dockerfile.is_file():
+            self.skipTest("no Dockerfile")
+        content = dockerfile.read_text()
+
+        # Binary -> Debian package that provides it. Tools intentionally left out
+        # of the image are mapped to None, with the reason in the comment.
+        expected = {
+            "python3": "python3",
+            "ip": "iproute2",
+            "nmap": "nmap",
+            "arp-scan": "arp-scan",
+            "tshark": "tshark",
+            "dumpcap": "tshark",
+            "nbtscan": "nbtscan",
+            "dig": "dnsutils",
+            "avahi-browse": "avahi-utils",
+            "avahi-resolve": "avahi-utils",
+            "p0f": "p0f",
+            "searchsploit": "exploitdb",
+            "sslscan": "sslscan",
+            "snmpwalk": "snmp",
+            "setcap": "libcap2-bin",
+            "getcap": "libcap2-bin",
+            # Monitor mode needs the host's physical interface and drops the
+            # connection, so the Wi-Fi survey is host-only by design.
+            "airmon-ng": None,
+            "airodump-ng": None,
+            "iw": None,
+            # Capabilities replace elevation inside the container.
+            "sudo": None,
+        }
+
+        discovered: set[str] = set()
+        for module in (ROOT / "network_atlas").glob("*.py"):
+            text = module.read_text()
+            discovered |= set(re.findall(r'shutil\.which\("([a-z0-9_.-]+)"\)', text))
+            discovered |= set(re.findall(r'_require\("([a-z0-9_.-]+)"\)', text))
+
+        unmapped = sorted(discovered - expected.keys())
+        self.assertFalse(
+            unmapped,
+            f"code depends on {unmapped} but the test does not say which package "
+            "provides them; add them to the image or record why they are excluded",
+        )
+        for binary in sorted(discovered):
+            package = expected[binary]
+            if package is None:
+                continue
+            self.assertIn(
+                package, content,
+                f"{binary} is used by the code but {package} is not installed in the image",
+            )
+
+    def test_dockerfile_and_compose_stay_host_networked_and_unprivileged(self) -> None:
+        """Two properties the container cannot work without, and one it must not have."""
+        dockerfile = ROOT / "Dockerfile"
+        compose = ROOT / "docker-compose.yml"
+        if not dockerfile.is_file() or not compose.is_file():
+            self.skipTest("no container files")
+        image = dockerfile.read_text()
+        # Comments explain why some settings are deliberately absent, so they must
+        # not be searched for those settings' names.
+        stack = "\n".join(
+            line for line in compose.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+
+        # Host networking: on the default bridge the container is behind NAT on its
+        # own segment, so ARP scans and broadcast discovery reach nothing.
+        self.assertIn("network_mode: host", stack)
+        # Unprivileged: capabilities on the binaries, not root for the process.
+        self.assertIn("USER atlas", image)
+        self.assertIn("setcap", image)
+        self.assertNotIn("privileged: true", stack)
+        # tshark needs NET_ADMIN, which is not in Docker's default capability set.
+        self.assertIn("NET_ADMIN", stack)
+        self.assertIn("cap_drop", stack)
+
+        # no-new-privileges must stay off: it stops the kernel honouring file
+        # capabilities, so nmap loses raw sockets and every scan quietly falls
+        # back to an unprivileged connect scan. The dropped bounding set is the
+        # real constraint. Asserted so it cannot be re-added as a "hardening" win.
+        self.assertNotIn("no-new-privileges", stack)
+
+        # Granting a capability the bounding set does not include makes the
+        # binary unexecutable: execve returns EPERM before it runs.
+        for granted in re.findall(r"setcap ([a-z_,]+)\+eip", image):
+            for capability in granted.split(","):
+                self.assertIn(
+                    capability.removeprefix("cap_").upper(), stack,
+                    f"{capability} is granted on a binary but not added in compose, "
+                    "which makes that binary fail to exec with EPERM",
+                )
+
+    def test_isolated_container_is_detected_and_reported(self) -> None:
+        """A container that cannot reach the LAN must say so, not return an empty map.
+
+        On Docker's default bridge, and on Docker Desktop for macOS/Windows, the
+        network namespace is NAT'd: discovery describes the container's own
+        segment. Left undetected this looks exactly like a network with nothing on
+        it, which is the most misleading failure this tool can have.
+        """
+        original = findings.netinfo.container_info
+        try:
+            findings.netinfo.container_info = lambda: {
+                "in_container": True, "runtime": "docker", "wsl": False,
+                "network_isolated": True,
+                "isolation_reason": "the container is on a private bridge network",
+            }
+            findings.evaluate(self.db)
+        finally:
+            findings.netinfo.container_info = original
+        rows = [row for row in self.db.findings() if row["kind"] == "container-isolated"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["severity"], "high")
+        # It must name a way out, not just report the problem.
+        self.assertIn("host networking", rows[0]["remediation"])
+        self.assertIn("macvlan", rows[0]["remediation"])
+
+    def test_healthy_deployment_raises_no_isolation_finding(self) -> None:
+        original = findings.netinfo.container_info
+        try:
+            for environment in (
+                {"in_container": False, "runtime": None, "wsl": False,
+                 "network_isolated": False, "isolation_reason": None},
+                {"in_container": True, "runtime": "docker", "wsl": False,
+                 "network_isolated": False, "isolation_reason": None},
+            ):
+                self.db.conn.execute("DELETE FROM findings")
+                self.db.commit()
+                findings.netinfo.container_info = lambda env=environment: env
+                findings.evaluate(self.db)
+                self.assertFalse(
+                    [r for r in self.db.findings() if r["kind"] == "container-isolated"],
+                    environment,
+                )
+        finally:
+            findings.netinfo.container_info = original
+
+    def test_isolation_detection_needs_a_container(self) -> None:
+        # The bridge-network heuristic must never fire on a real host whose LAN
+        # legitimately sits in 172.16.0.0/12.
+        info = netinfo.container_info()
+        if not info["in_container"]:
+            self.assertFalse(info["network_isolated"])
+            self.assertIsNone(info["isolation_reason"])
+
+    def test_version_has_one_source_of_truth(self) -> None:
+        """Two places to edit means a release can ship disagreeing version numbers."""
+        import network_atlas
+
+        self.assertRegex(network_atlas.__version__, r"^\d+\.\d+\.\d+")
+        pyproject = (ROOT / "pyproject.toml").read_text()
+        # pyproject must derive the version, not restate it.
+        self.assertIn('dynamic = ["version"]', pyproject)
+        self.assertIn('version = {attr = "network_atlas.__version__"}', pyproject)
+        self.assertNotRegex(
+            pyproject, r'^version\s*=\s*"',
+            "pyproject.toml restates the version instead of deriving it",
+        )
+
+    def test_publish_target_tags_the_real_version(self) -> None:
+        makefile = (ROOT / "Makefile").read_text()
+        # The tag must come from the code, never from a hand-typed default.
+        self.assertIn("network_atlas.__version__", makefile)
+        self.assertIn("$(REPOSITORY):$(VERSION)", makefile)
+        self.assertIn("$(REPOSITORY):latest", makefile)
+        # arm64 is what makes a Raspberry Pi deployment possible.
+        self.assertIn("linux/arm64", makefile)
+        # Multi-platform needs a docker-container builder; the default driver
+        # cannot do it, and failing late wastes a long build.
+        self.assertIn("--driver docker-container", makefile)
+
+    def test_makefile_has_no_duplicate_targets(self) -> None:
+        """A duplicated target silently overrides the earlier recipe."""
+        import collections
+
+        names = [
+            line.split(":")[0]
+            for line in (ROOT / "Makefile").read_text().splitlines()
+            if re.match(r"^[a-zA-Z0-9_-]+:", line)
+        ]
+        duplicates = [name for name, count in collections.Counter(names).items() if count > 1]
+        self.assertFalse(duplicates, f"duplicate Make targets: {duplicates}")
+
+    def test_makefile_detects_either_compose_shape(self) -> None:
+        """Debian packages compose v2 as `docker-compose` and not as a CLI plugin.
+
+        Hard-coding `docker compose` would break every container target on a stock
+        Debian host, where that subcommand does not exist.
+        """
+        makefile = ROOT / "Makefile"
+        if not makefile.is_file():
+            self.skipTest("no Makefile")
+        content = makefile.read_text()
+        self.assertRegex(
+            content, r"COMPOSE \?=.*docker compose version.*docker-compose",
+            "COMPOSE must fall back to the standalone binary when the plugin is absent",
+        )
+        # Container targets must go through the detected variable, never the
+        # literal subcommand.
+        def invokes_compose(line: str) -> bool:
+            if not line.startswith("\t") or "docker compose" not in line:
+                return False
+            # The capability probe must name the plugin literally, and printed
+            # text merely mentions it; neither is an invocation.
+            if "docker compose version" in line:
+                return False
+            return not any(word in line for word in ("printf", "echo"))
+
+        container_recipes = [
+            line for line in content.splitlines() if invokes_compose(line)
+        ]
+        self.assertFalse(
+            container_recipes,
+            f"these recipes hard-code `docker compose` instead of $(COMPOSE): {container_recipes}",
+        )
+
+    def test_viewer_port_is_configurable_in_compose(self) -> None:
+        """Host networking uses the host's ports, so the port must be overridable.
+
+        A natively running viewer already holds 8765; without an override the
+        container simply restart-loops on "Address already in use".
+        """
+        for name in ("docker-compose.yml", "docker-compose.macvlan.yml"):
+            path = ROOT / name
+            if not path.is_file():
+                continue
+            self.assertIn("ATLAS_PORT", path.read_text(), name)
+        makefile = (ROOT / "Makefile").read_text()
+        # docker-up must refuse to start into a conflict rather than loop.
+        self.assertIn("already in use", makefile)
+
+    def test_macvlan_compose_is_a_complete_alternative(self) -> None:
+        compose = ROOT / "docker-compose.macvlan.yml"
+        if not compose.is_file():
+            self.skipTest("no macvlan compose file")
+        stack = "\n".join(
+            line for line in compose.read_text().splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        # Its whole purpose is an own-address network instead of the host's.
+        self.assertIn("atlas-lan", stack)
+        self.assertNotIn("network_mode: host", stack)
+        # Same capability contract as the host-networked path.
+        self.assertIn("NET_RAW", stack)
+        self.assertIn("NET_ADMIN", stack)
+        self.assertIn("cap_drop", stack)
+        self.assertNotIn("no-new-privileges", stack)
+        self.assertNotIn("privileged: true", stack)
+
+    # -- scheduler --------------------------------------------------------
+    def test_monitoring_is_off_until_switched_on(self) -> None:
+        # Scanning sends packets to other people's devices; it must never start
+        # by itself just because the viewer is running.
+        scheduler.ensure_defaults(self.db)
+        self.assertFalse(scheduler.monitoring_active(self.db))
+        self.assertTrue(all(not entry["enabled"] for entry in scheduler.entries(self.db)))
+        changed = scheduler.set_monitoring(self.db, True)
+        self.assertTrue(scheduler.monitoring_active(self.db))
+        self.assertEqual(set(changed), {"neighbours", "passive", "scan"})
+        scheduler.set_monitoring(self.db, False)
+        self.assertFalse(scheduler.monitoring_active(self.db))
+
+    def test_schedule_rejects_unknown_tasks_and_silly_intervals(self) -> None:
+        scheduler.ensure_defaults(self.db)
+        with self.assertRaises(ValueError):
+            scheduler.set_enabled(self.db, "bogus", True)
+        with self.assertRaises(ValueError):
+            scheduler.set_interval(self.db, "scan", 5)
+        with self.assertRaises(ValueError):
+            scheduler.set_interval(self.db, "scan", 999999999)
+        scheduler.set_interval(self.db, "scan", 900)
+        entry = next(e for e in scheduler.entries(self.db) if e["kind"] == "scan")
+        self.assertEqual(entry["interval_seconds"], 900)
+
+    def test_due_calculation(self) -> None:
+        import time
+        now = time.time()
+        self.assertFalse(scheduler._due({"enabled": False, "interval_seconds": 60}, now))
+        self.assertTrue(
+            scheduler._due({"enabled": True, "interval_seconds": 60, "last_run_at": None}, now)
+        )
+        self.assertFalse(
+            scheduler._due(
+                {"enabled": True, "interval_seconds": 3600,
+                 "last_run_at": utc_now()}, now
+            )
+        )
+
+    # -- flows and wireless ----------------------------------------------
+    def test_flows_separate_internal_peers_from_the_outside(self) -> None:
+        first, second = self._seed_pair()
+        original = ingest.netinfo.local_networks
+        try:
+            ingest.netinfo.local_networks = lambda: [
+                {"network": "10.23.45.0/24", "interface": "eth0",
+                 "family": "ipv4", "source": None, "addresses": 256}
+            ]
+            count = ingest.import_flows(self.db, [
+                {"source": "10.23.45.11", "target": "10.23.45.12", "port": 445, "count": 3},
+                {"source": "10.23.45.11", "target": "8.8.8.8", "port": 443, "count": 9},
+            ])
+        finally:
+            ingest.netinfo.local_networks = original
+        self.assertEqual(count, 2)
+        rows = self.db.flows()
+        internal = next(row for row in rows if row["port"] == 445)
+        external = next(row for row in rows if row["port"] == 443)
+        self.assertEqual(internal["target_device_id"], second)
+        self.assertEqual(internal["external"], 0)
+        self.assertIsNone(external["target_device_id"])
+        self.assertEqual(external["external"], 1)
+        self.assertEqual(external["target_address"], "8.8.8.8")
+
+    def test_wireless_survey_csv_is_parsed_into_associations(self) -> None:
+        csv_text = (
+            "BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, "
+            "Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
+            "AA:BB:CC:DD:EE:01, 2026-01-01 00:00:00, 2026-01-01 00:01:00, 6, 130, WPA2, "
+            "CCMP, PSK, -42, 120, 0, 0.0.0.0, 8, HomeWiFi, \n"
+            "\n"
+            "Station MAC, First time seen, Last time seen, Power, # packets, BSSID, Probed ESSIDs\n"
+            "1a:2b:3c:4d:5e:6f, 2026-01-01 00:00:00, 2026-01-01 00:01:00, -55, 40, "
+            "AA:BB:CC:DD:EE:01, HomeWiFi\n"
+        )
+        path = Path(self.temp.name) / "survey-01.csv"
+        path.write_text(csv_text)
+        parsed = wireless.parse_csv(path)
+        self.assertEqual(len(parsed["access_points"]), 1)
+        self.assertEqual(parsed["access_points"][0]["ssid"], "HomeWiFi")
+        self.assertEqual(parsed["access_points"][0]["channel"], 6)
+        self.assertEqual(len(parsed["stations"]), 1)
+        self.assertEqual(parsed["stations"][0]["bssid"], "aa:bb:cc:dd:ee:01")
+
+        imported = ingest.import_wireless(self.db, parsed)
+        self.assertEqual(imported["access_points"], 1)
+        self.assertEqual(imported["associations"], 1)
+        classify_all(self.db)
+        access_point = next(
+            item for item in self.db.devices() if item["mac"] == "aa:bb:cc:dd:ee:01"
+        )
+        # A beaconing BSSID is an access point by definition.
+        self.assertEqual(access_point["effective_type"], "access-point")
+
+    def test_wireless_flags_ssids_on_multiple_bssids(self) -> None:
+        rogues = wireless.rogue_access_points([
+            {"ssid": "Home", "bssid": "aa:bb:cc:dd:ee:01"},
+            {"ssid": "Home", "bssid": "aa:bb:cc:dd:ee:02"},
+            {"ssid": "Guest", "bssid": "aa:bb:cc:dd:ee:03"},
+            {"ssid": None, "bssid": "aa:bb:cc:dd:ee:04"},
+        ])
+        self.assertEqual(len(rogues), 1)
+        self.assertEqual(rogues[0]["ssid"], "Home")
+        self.assertEqual(rogues[0]["count"], 2)
+
+    def test_snmp_arp_suffix_yields_the_address(self) -> None:
+        self.assertEqual(_address_from_arp_suffix("1.192.168.1.254"), "192.168.1.254")
+        self.assertIsNone(_address_from_arp_suffix("1.224.0.0.1"))
+        self.assertIsNone(_address_from_arp_suffix("1.192.168.1"))
 
     def test_mdns_print_service_classifies_printer(self) -> None:
         text = (ROOT / "examples" / "demo-mdns.txt").read_text()

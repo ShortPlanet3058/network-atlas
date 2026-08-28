@@ -1,88 +1,113 @@
 # Network Atlas
 
-Network Atlas discovers devices on an authorized local network and displays them in an interactive browser map. It builds a local inventory from Nmap, ARP, mDNS, and optional SNMP data, then classifies devices such as computers, phones, printers, routers, switches, and IoT equipment.
+**See everything on your local network, and what to fix about it.**
 
-Everything runs locally. The database and scan output are stored under `~/.local/state/network-atlas/`; the project has no telemetry or cloud service.
+Network Atlas discovers the devices on a network you administer, draws them as an
+interactive map in your browser, works out what each one is, and audits what it
+finds for exposed services, weak TLS and published vulnerabilities — with a
+concrete remediation for every issue it raises.
 
-## Dependencies
+Everything runs locally. No telemetry, no cloud service, and no service
+fingerprint ever leaves the machine.
 
-- Python 3.11 or newer
-- GNU Make
-- `ip` from `iproute2`
-- Nmap
-- `arp-scan` for local Ethernet discovery
-- `avahi-browse` and `avahi-daemon` for mDNS discovery
-- `snmpwalk` for optional managed-switch topology
+![Overview](https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/.github/screenshot.png)
 
-These tools are included in Kali's `kali-linux-everything` package. Check their availability with:
+## What it does
+
+- **Finds devices** by active scanning, by listening passively for the broadcast
+  traffic devices emit anyway, and by reading the kernel's own neighbour tables —
+  so it catches hosts that firewall themselves and never answer a probe.
+- **Names and identifies them** from DNS, mDNS, NetBIOS, DHCP, a 56,000-entry
+  vendor database, and OS fingerprinting — then explains its reasoning for each.
+- **Maps how they connect.** Where a switch speaks LLDP or CDP, the map shows the
+  physical port a device is plugged into.
+- **Tells you what to fix**, ranked by severity, each finding with what was
+  observed, why it matters, and how to resolve it.
+- **Notices changes** — a device arriving, a port opening, an address moving to a
+  different MAC — and keeps a timeline.
+
+**[Full documentation is in the wiki →](https://github.com/ShortPlanet3058/network-atlas/wiki)**
+
+## Install
+
+### Docker (quickest)
 
 ```bash
-make doctor
-```
-
-The Python application uses only the standard library, so no `pip install` is required.
-
-## Run the viewer
-
-```bash
-cd network-atlas
-make start
+curl -O https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/docker-compose.yml
+docker compose up -d
 ```
 
 Open <http://127.0.0.1:8765>.
 
-```bash
-make status     # Check whether it is running
-make logs       # Follow viewer logs
-make restart    # Restart it
-make stop       # Stop it
-```
+That pulls [`shortplanet/network-atlas`](https://hub.docker.com/r/shortplanet/network-atlas)
+and needs nothing else installed — every scanning tool is inside the image.
 
-## Scan the network
+Built for **amd64 and arm64**, so it runs on a Raspberry Pi 3 or newer with a
+64-bit OS as well as on any x86 machine. Pin a version with
+`ATLAS_IMAGE=shortplanet/network-atlas:1.0.0` if you want reproducible
+deployments.
 
-Find your interface and subnet:
+> **Linux hosts only for full discovery.** The container needs host networking to
+> see your network, and on Docker Desktop for macOS or Windows that reaches only a
+> Linux VM rather than your machine. Network Atlas detects this and tells you
+> instead of returning an empty map. See
+> [Docker](https://github.com/ShortPlanet3058/network-atlas/wiki/Docker).
 
-```bash
-ip -brief address
-ip route
-```
+### From source
 
-Then run the collectors you need:
-
-```bash
-# Scan the primary local subnet with live progress
-make scan
-
-# Preview the detected target and Nmap command without sending packets
-make scan-dry
-
-# Scan a different authorized subnet or use the faster discovery profile
-make scan TARGET=10.23.45.0/24
-make scan-discovery TARGET=10.23.45.0/24
-
-# Discover devices on the directly connected LAN
-make arp INTERFACE=eth0
-
-# Collect advertised names and services
-make mdns
-```
-
-If mDNS reports that Avahi is not running, start it with `sudo systemctl start avahi-daemon`.
-
-For managed switches, copy `config.example.json` to the ignored `switches.json`, configure read-only SNMP credentials through environment variables, and run:
+Needs Python 3.11+, GNU Make, and the scanning tools — all present in Kali's
+`kali-linux-everything`, or install them individually
+([Installation](https://github.com/ShortPlanet3058/network-atlas/wiki/Installation)).
 
 ```bash
-make snmp SNMP_CONFIG=switches.json
+git clone https://github.com/ShortPlanet3058/network-atlas.git
+cd network-atlas
+make doctor      # check which tools are available
+make start       # start the viewer
 ```
 
-Use `make help` to list every command. Only scan networks you own or are explicitly authorized to administer.
+Open <http://127.0.0.1:8765>, then use **Scan network** to collect data. No
+terminal needed after that.
+
+## First run
+
+Click **Scan network → Full sweep**. It reads the neighbour caches, scans the
+detected subnet, resolves names, listens passively, then audits the result —
+usually a few minutes. Everything appears as it goes.
+
+The **Fix** tab is where the value is: each finding says what was found, why it
+matters, and what to do about it.
+
+## Authorization
+
+Only scan networks you own or are explicitly authorized to administer. Network
+Atlas refuses public address ranges unless you confirm the range is yours, and it
+only ever reads — it does not test credentials, run exploits, or attempt to change
+any device. See
+[Privacy and Safety](https://github.com/ShortPlanet3058/network-atlas/wiki/Privacy-and-Safety).
+
+## Documentation
+
+| Page | What is in it |
+|---|---|
+| [Installation](https://github.com/ShortPlanet3058/network-atlas/wiki/Installation) | Every install route and its requirements |
+| [Getting Started](https://github.com/ShortPlanet3058/network-atlas/wiki/Getting-Started) | Your first scan, walked through |
+| [Web Interface](https://github.com/ShortPlanet3058/network-atlas/wiki/Web-Interface) | Every tab and panel |
+| [Scanning](https://github.com/ShortPlanet3058/network-atlas/wiki/Scanning) | Scan types, what each one finds |
+| [Findings](https://github.com/ShortPlanet3058/network-atlas/wiki/Findings) | Every audit rule and its remediation |
+| [Monitoring](https://github.com/ShortPlanet3058/network-atlas/wiki/Monitoring) | Continuous monitoring and the timeline |
+| [Docker](https://github.com/ShortPlanet3058/network-atlas/wiki/Docker) | Running in a container, networking caveats |
+| [Command Reference](https://github.com/ShortPlanet3058/network-atlas/wiki/Command-Reference) | Every command and Make target |
+| [How It Works](https://github.com/ShortPlanet3058/network-atlas/wiki/How-It-Works) | Architecture, classification, data model |
+| [Troubleshooting](https://github.com/ShortPlanet3058/network-atlas/wiki/Troubleshooting) | When something does not work |
+| [Privacy and Safety](https://github.com/ShortPlanet3058/network-atlas/wiki/Privacy-and-Safety) | What is stored, what it will not do |
 
 ## Development
 
 ```bash
-make install-hooks  # Enable privacy checks before commits and pushes
-make test
-make privacy
+make check           # tests plus the privacy scan
+make install-hooks   # privacy checks before commit and push
 ```
 
-See [PRIVACY.md](PRIVACY.md) for details about local data storage and repository safeguards.
+The application uses only the Python standard library. See
+[PRIVACY.md](PRIVACY.md) for how local data is stored and kept out of Git.

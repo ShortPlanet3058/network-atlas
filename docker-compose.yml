@@ -1,0 +1,71 @@
+# Network Atlas in a container.
+#
+# Two ways to run this:
+#
+#   From Docker Hub — you only need this one file:
+#       docker compose up -d
+#
+#   From a clone of the repository — docker-compose.override.yml is picked up
+#   automatically and builds the image from source instead of pulling it:
+#       make docker-up
+#
+# `network_mode: host` is required, not optional. On Docker's default bridge the
+# container sits behind NAT on its own layer-2 segment, so ARP scans, broadcast
+# discovery (mDNS, DHCP, SSDP, NetBIOS, LLDP, CDP) and the kernel neighbour table
+# all describe the bridge rather than your network — the map comes back empty.
+#
+# This works fully on Linux. On Docker Desktop for macOS and Windows the "host"
+# is a Linux VM, not your machine, so LAN discovery is limited to what that VM
+# can see. See https://github.com/ShortPlanet3058/network-atlas/wiki/Docker.
+
+services:
+  network-atlas:
+    # Pulled from Docker Hub. Override with ATLAS_IMAGE to run a different tag or
+    # a locally built image:  ATLAS_IMAGE=network-atlas:latest docker compose up -d
+    image: ${ATLAS_IMAGE:-shortplanet/network-atlas:latest}
+    container_name: network-atlas
+
+    # Shares the host's network namespace. This also means the published port is
+    # the host's port directly, so `ports:` is neither used nor honoured here.
+    network_mode: host
+
+    cap_add:
+      # Raw packets for Nmap's SYN/OS detection, and packet capture for the
+      # passive collector. NET_RAW is in Docker's default set; NET_ADMIN is not.
+      - NET_RAW
+      - NET_ADMIN
+
+    # Everything else is dropped. This bounding set is what actually constrains
+    # the container: a file capability can never grant more than it allows.
+    cap_drop:
+      - ALL
+
+    # security_opt is deliberately left unset. Adding no-new-privileges stops the
+    # kernel honouring file capabilities, which is how the unprivileged user gets
+    # raw sockets here: with it set, nmap fails with "Couldn't open a raw socket"
+    # and every scan silently degrades to a connect scan with no OS detection.
+    # Running as root would be the alternative, and worse. As it stands the
+    # process is uid 10001 and cannot exceed NET_RAW and NET_ADMIN.
+
+    volumes:
+      # Inventory, findings, event history and raw scan output.
+      - atlas-data:/data
+
+    environment:
+      NETWORK_ATLAS_DB: /data/atlas.db
+
+    # Loopback only: the viewer has no authentication, and under host networking
+    # this is the host's own loopback. Because the port is the HOST's port, it
+    # collides with anything already listening there -- including a natively run
+    # `make start`. Override with ATLAS_PORT if 8765 is taken.
+    command:
+      - serve
+      - --host
+      - 127.0.0.1
+      - --port
+      - ${ATLAS_PORT:-8765}
+
+    restart: unless-stopped
+
+volumes:
+  atlas-data:

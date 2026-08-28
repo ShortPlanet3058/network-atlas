@@ -1,109 +1,458 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Network Atlas</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <svg class="icon-defs" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="ic-router" viewBox="0 0 24 24"><rect x="2.5" y="13" width="19" height="7.5" rx="2"/><path d="M6.5 16.75h3M17.5 16.75h.01"/><path d="M12 10V6.5M8.2 7.4a5.4 5.4 0 0 1 7.6 0M6 4.9a8.9 8.9 0 0 1 12 0"/></symbol>
+      <symbol id="ic-switch" viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 11h4l-1.6-1.6M6 13h4M18 11h-4l1.6 1.6M18 13h-4"/></symbol>
+      <symbol id="ic-access-point" viewBox="0 0 24 24"><path d="M12 19.5v-6"/><rect x="9" y="17" width="6" height="3.5" rx="1.2"/><path d="M8.3 10.7a5.2 5.2 0 0 1 7.4 0M5.6 8a9 9 0 0 1 12.8 0M11 13.4a1.4 1.4 0 0 1 2 0"/></symbol>
+      <symbol id="ic-computer" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></symbol>
+      <symbol id="ic-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 5.5h3M11 18.5h2"/></symbol>
+      <symbol id="ic-server" viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="7" rx="1.8"/><rect x="3" y="13.5" width="18" height="7" rx="1.8"/><path d="M6.5 7h.01M6.5 17h.01M10 7h4M10 17h4"/></symbol>
+      <symbol id="ic-printer" viewBox="0 0 24 24"><path d="M7 8.5V3.5h10v5"/><rect x="3" y="8.5" width="18" height="7.5" rx="1.8"/><path d="M7 13h10v7.5H7z"/><path d="M17.5 11.5h.01"/></symbol>
+      <symbol id="ic-storage" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+      <symbol id="ic-media" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M10.2 8.3l4.3 2.2-4.3 2.2z"/><path d="M8 20.5h8"/></symbol>
+      <symbol id="ic-camera" viewBox="0 0 24 24"><path d="M3.5 6.2l13-2.4 1.2 5.2-13 2.4z"/><path d="M5.5 11.4l1 4.1M12 20.5h7"/><path d="M12 15.5v5"/><circle cx="19.2" cy="7.4" r="1.6"/></symbol>
+      <symbol id="ic-game-console" viewBox="0 0 24 24"><path d="M7.5 8h9a5 5 0 0 1 5 5.4l-.3 3.1A2.6 2.6 0 0 1 16.4 18l-1.3-2.3H8.9L7.6 18a2.6 2.6 0 0 1-4.8-1.5l-.3-3.1A5 5 0 0 1 7.5 8z"/><path d="M7 12.5h2.4M8.2 11.3v2.4M15.5 12h.01M17.5 13.5h.01"/></symbol>
+      <symbol id="ic-iot" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10.5 3.5v3.5M13.5 3.5v3.5M10.5 17v3.5M13.5 17v3.5M3.5 10.5h3.5M3.5 13.5h3.5M17 10.5h3.5M17 13.5h3.5"/></symbol>
+      <symbol id="ic-firewall" viewBox="0 0 24 24"><path d="M12 2.8l7.5 3v6c0 4.4-3.1 8.2-7.5 9.4-4.4-1.2-7.5-5-7.5-9.4v-6z"/><path d="M4.8 9.5h14.4M12 5.8v14.4M8.4 5.8v3.7M15.6 5.8v3.7"/></symbol>
+      <symbol id="ic-network-device" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="3.8" r="1.8"/><circle cx="12" cy="20.2" r="1.8"/><circle cx="3.8" cy="12" r="1.8"/><circle cx="20.2" cy="12" r="1.8"/><path d="M12 5.6v3.8M12 14.6v3.8M5.6 12h3.8M14.6 12h3.8"/></symbol>
+      <symbol id="ic-unknown" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2-2.4 3.6M12 17.2h.01"/></symbol>
+      <symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.2 9.5h17.6M3.2 14.5h17.6"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/></symbol>
+      <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></symbol>
+      <symbol id="ic-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.8 4.2v4.6h-4.6"/></symbol>
+      <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.3M12 19.2v2.3M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.5 12h2.3M19.2 12h2.3M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7"/></symbol>
+      <symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></symbol>
+      <symbol id="ic-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="ic-chevron" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+      <symbol id="ic-radar" viewBox="0 0 24 24"><path d="M12 12L19 7"/><path d="M12 21a9 9 0 1 1 6.4-15.3"/><circle cx="12" cy="12" r="2"/><path d="M12 17a5 5 0 0 1-3.5-8.6"/></symbol>
+      <symbol id="ic-ear" viewBox="0 0 24 24"><path d="M7 9a5 5 0 1 1 10 0c0 2.5-2 3.2-2.8 4.4-.7 1-.4 2.4-1.4 3.4a2.8 2.8 0 0 1-4.8-2"/><path d="M10.5 9a1.6 1.6 0 0 1 3 .4"/></symbol>
+      <symbol id="ic-alert" viewBox="0 0 24 24"><path d="M12 3.5l9 15.5H3z"/><path d="M12 9.5v4.2M12 16.6h.01"/></symbol>
+      <symbol id="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+      <symbol id="ic-pin" viewBox="0 0 24 24"><path d="M12 21s7-5.7 7-11a7 7 0 1 0-14 0c0 5.3 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></symbol>
+      <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.3l3.5 2"/></symbol>
+      <symbol id="ic-port" viewBox="0 0 24 24"><rect x="3.5" y="8" width="17" height="11" rx="2"/><path d="M8 8V5.5h8V8M8 19v-4h8v4"/></symbol>
+      <symbol id="ic-shield-check" viewBox="0 0 24 24"><path d="M12 2.8l7.5 3v6c0 4.4-3.1 8.2-7.5 9.4-4.4-1.2-7.5-5-7.5-9.4v-6z"/><path d="M8.8 11.8l2.3 2.3 4.1-4.4"/></symbol>
+      <symbol id="ic-wrench" viewBox="0 0 24 24"><path d="M14.5 6.2a3.9 3.9 0 0 1 5.3-3.6l-2.5 2.5 1.6 1.6 2.5-2.5a3.9 3.9 0 0 1-5 5l-8 8a2.2 2.2 0 1 1-3.1-3.1l8-8a3.9 3.9 0 0 1-.8-2.4z"/></symbol>
+      <symbol id="ic-mute" viewBox="0 0 24 24"><path d="M11 5.5L6.5 9H3.5v6h3L11 18.5z"/><path d="M16 9.5l4.5 5M20.5 9.5l-4.5 5"/></symbol>
+      <symbol id="ic-power" viewBox="0 0 24 24"><path d="M12 3.2v7.6"/><path d="M7.4 6.6a7.5 7.5 0 1 0 9.2 0"/></symbol>
+    </defs>
+  </svg>
+
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">NA</span>
-      <div><h1>Network Atlas</h1><p>Local inventory and topology</p></div>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><use href="#ic-network-device"/></svg>
+      </span>
+      <div class="brand-text">
+        <strong>Network Atlas</strong>
+        <span id="vantage-line">Reading your network…</span>
+      </div>
     </div>
-    <div class="topbar-right">
-      <span class="local-badge">LOCAL ONLY</span>
-      <div class="scan-state"><span id="state-dot"></span><span id="scan-status">Loading inventory…</span></div>
+
+    <div class="topbar-actions">
+      <div id="live-pill" class="live-pill" hidden>
+        <span class="live-dot" aria-hidden="true"></span>
+        <div class="live-body">
+          <span id="live-label">Scanning</span>
+          <span id="live-detail" class="live-detail"></span>
+        </div>
+        <div class="live-track" aria-hidden="true"><i id="live-bar"></i></div>
+        <button id="live-cancel" class="ghost-button" title="Stop the running scan">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-stop"/></svg>
+        </button>
+      </div>
+
+      <button id="monitor-toggle" class="ghost-button" title="Continuous monitoring">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-power"/></svg>
+        <span id="monitor-label">Monitoring off</span>
+      </button>
+      <button id="open-scan" class="primary-button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-radar"/></svg>
+        <span>Scan network</span>
+      </button>
+      <button id="refresh" class="icon-button" title="Reload data" aria-label="Reload data">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-refresh"/></svg>
+      </button>
+      <button id="theme-toggle" class="icon-button" title="Switch theme" aria-label="Switch theme">
+        <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-sun"/></svg>
+        <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-moon"/></svg>
+      </button>
     </div>
   </header>
 
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button class="tab active" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button class="tab" role="tab" data-tab="map" aria-selected="false">Map</button>
+    <button class="tab" role="tab" data-tab="devices" aria-selected="false">Devices <b id="tab-count-devices">0</b></button>
+    <button class="tab" role="tab" data-tab="ports" aria-selected="false">Ports <b id="tab-count-ports">0</b></button>
+    <button class="tab" role="tab" data-tab="findings" aria-selected="false">Fix <b id="tab-count-findings">0</b></button>
+    <button class="tab" role="tab" data-tab="timeline" aria-selected="false">Timeline <b id="tab-count-events">0</b></button>
+    <button class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
+  </nav>
+
+  <div id="isolation-banner" class="banner" hidden role="alert">
+    <span class="banner-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><use href="#ic-alert"/></svg>
+    </span>
+    <div class="banner-body">
+      <strong>Discovery cannot see your network</strong>
+      <span id="isolation-detail"></span>
+    </div>
+  </div>
+
   <main>
-    <section class="metrics" aria-label="Inventory summary">
-      <article><span>Devices</span><strong id="metric-devices">—</strong></article>
-      <article><span>Online</span><strong id="metric-online">—</strong></article>
-      <article><span>Open services</span><strong id="metric-services">—</strong></article>
-      <article><span>Known links</span><strong id="metric-links">—</strong></article>
-      <article><span>Classified</span><strong id="metric-classified">—</strong></article>
+    <!-- Overview ---------------------------------------------------------- -->
+    <section class="panel-view active" data-view="overview">
+      <div class="stat-row">
+        <article class="stat accent-devices">
+          <span class="stat-label">Devices online</span>
+          <strong id="stat-devices">—</strong>
+          <span id="stat-devices-note" class="stat-note"></span>
+        </article>
+        <article class="stat accent-identified">
+          <span class="stat-label">Identified</span>
+          <strong id="stat-identified">—</strong>
+          <span id="stat-identified-note" class="stat-note"></span>
+        </article>
+        <article class="stat accent-ports">
+          <span class="stat-label">Open ports</span>
+          <strong id="stat-ports">—</strong>
+          <span class="stat-note">Reachable services</span>
+        </article>
+        <article class="stat accent-links">
+          <span class="stat-label">Known links</span>
+          <strong id="stat-links">—</strong>
+          <span class="stat-note">Mapped connections</span>
+        </article>
+        <article class="stat accent-attention">
+          <span class="stat-label">To fix</span>
+          <strong id="stat-findings">—</strong>
+          <span id="stat-findings-note" class="stat-note">Open findings</span>
+        </article>
+      </div>
+
+      <div class="overview-grid">
+        <section class="card">
+          <header class="card-head">
+            <h2>What is on your network</h2>
+            <p>Grouped by what each device appears to be. Select a group to see it on the map.</p>
+          </header>
+          <div id="type-cards" class="type-cards"></div>
+        </section>
+
+        <section class="card">
+          <header class="card-head">
+            <h2>Your connection</h2>
+            <p>Where Network Atlas is looking from.</p>
+          </header>
+          <dl id="vantage-facts" class="facts"></dl>
+        </section>
+
+        <section class="card">
+          <header class="card-head">
+            <h2>What to fix first</h2>
+            <p>The most serious findings, each with a concrete fix.</p>
+          </header>
+          <div id="attention-list" class="attention-list"></div>
+        </section>
+
+        <section class="card">
+          <header class="card-head">
+            <h2>Recently seen</h2>
+            <p>Devices and services that appeared most recently.</p>
+          </header>
+          <div id="changes-list" class="changes-list"></div>
+        </section>
+      </div>
     </section>
 
-    <section class="workspace">
-      <aside class="filters panel">
-        <div class="panel-heading">
-          <div><span class="eyebrow">Explore</span><h2>Inventory</h2></div>
-          <button id="refresh" class="icon-button" title="Refresh data" aria-label="Refresh data">↻</button>
+    <!-- Map --------------------------------------------------------------- -->
+    <section class="panel-view" data-view="map">
+      <div class="toolbar">
+        <div class="segmented" role="group" aria-label="Map layout">
+          <button class="segment active" data-layout="topology">Topology</button>
+          <button class="segment" data-layout="groups">By type</button>
+          <button class="segment" data-layout="subnet">By subnet</button>
         </div>
-        <label class="search">
-          <span>Search</span>
-          <input id="search" type="search" placeholder="IP, MAC, hostname, vendor…" autocomplete="off">
+        <label class="field search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-search"/></svg>
+          <input id="map-search" type="search" placeholder="Filter devices…" autocomplete="off">
         </label>
-        <div class="filter-heading"><span>Device types</span><button id="clear-filters">Reset</button></div>
-        <div id="type-filters" class="type-filters"></div>
-        <div class="filter-heading"><span>Link layers</span></div>
-        <label class="check"><input type="checkbox" data-edge="lldp" checked><i class="link-swatch lldp"></i> LLDP physical</label>
-        <label class="check"><input type="checkbox" data-edge="switch-port" checked><i class="link-swatch switch-port"></i> Switch attachment</label>
-        <label class="check"><input type="checkbox" data-edge="route" checked><i class="link-swatch route"></i> Routed path</label>
-        <label class="check"><input type="checkbox" data-edge="membership" checked><i class="link-swatch membership"></i> Logical subnet</label>
-        <div class="device-list-heading"><span>Visible devices</span><b id="list-count">0</b></div>
-        <div id="device-list" class="device-list"></div>
-        <p class="hint">Scroll to zoom. Drag the background to pan and drag devices to reposition them.</p>
-      </aside>
-
-      <section class="map-panel panel" aria-label="Interactive network map">
-        <div class="map-toolbar">
-          <div><span id="visible-count">0</span> visible devices</div>
-          <div class="map-actions">
-            <button id="zoom-out" aria-label="Zoom out">−</button>
-            <button id="zoom-in" aria-label="Zoom in">+</button>
-            <button id="fit-map">Fit map</button>
-            <button id="relayout">Re-layout</button>
-          </div>
+        <div class="toolbar-right">
+          <button id="expand-all" class="ghost-button">Expand all</button>
+          <button id="collapse-all" class="ghost-button">Collapse</button>
         </div>
-        <svg id="network-map" role="img" aria-label="Interactive network topology">
-          <defs>
-            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur>
-              <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
-            </filter>
-          </defs>
-          <g id="viewport"><g id="edges"></g><g id="edge-labels"></g><g id="nodes"></g></g>
-        </svg>
-        <div id="empty-map" class="empty-map" hidden>
-          <strong>No devices to display</strong>
-          <span>Import a scan or change the current filters.</span>
-        </div>
-      </section>
-
-      <aside class="details panel" aria-live="polite">
-        <div id="detail-empty" class="detail-empty">
-          <span class="radar">⌁</span>
-          <h2>Select a device</h2>
-          <p>Choose a node to inspect its identity, confidence, services and discovery evidence.</p>
-        </div>
-        <div id="detail-content" hidden>
-          <div class="detail-header">
-            <span id="detail-icon" class="device-icon"></span>
-            <div><span id="detail-type" class="eyebrow"></span><h2 id="detail-name"></h2></div>
-            <span id="detail-status" class="status-pill"></span>
-          </div>
-          <dl id="identity" class="identity"></dl>
-          <div class="confidence-block">
-            <div><span>Classification confidence</span><strong id="confidence-label"></strong></div>
-            <div class="confidence-track"><i id="confidence-bar"></i></div>
-          </div>
-          <section class="detail-section"><h3>Why this classification?</h3><ul id="reasons"></ul></section>
-          <section class="detail-section"><h3>Open services</h3><div id="services" class="service-list"></div></section>
-          <section class="detail-section"><h3>Recent evidence</h3><div id="evidence" class="evidence-list"></div></section>
-        </div>
-      </aside>
+      </div>
+      <div id="map-legend" class="legend"></div>
+      <div id="tree" class="tree" role="tree" aria-label="Network topology"></div>
+      <p id="map-empty" class="empty-state" hidden>
+        <strong>Nothing to map yet</strong>
+        <span>Run a scan to discover the devices on your network.</span>
+      </p>
     </section>
 
-    <section class="scan-history panel">
-      <div class="panel-heading"><div><span class="eyebrow">Audit trail</span><h2>Recent collections</h2></div></div>
-      <div id="scan-list" class="scan-list"></div>
+    <!-- Devices ----------------------------------------------------------- -->
+    <section class="panel-view" data-view="devices">
+      <div class="toolbar">
+        <label class="field search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-search"/></svg>
+          <input id="device-search" type="search" placeholder="Name, IP, MAC, vendor, OS…" autocomplete="off">
+        </label>
+        <div id="type-filters" class="chip-row"></div>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table" id="device-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="display_name">Device</th>
+              <th class="sortable" data-sort="effective_type">Type</th>
+              <th class="sortable" data-sort="primary_address">Address</th>
+              <th class="sortable" data-sort="vendor">Vendor</th>
+              <th class="sortable" data-sort="os_family">System</th>
+              <th class="sortable numeric" data-sort="service_count">Ports</th>
+              <th class="sortable numeric" data-sort="confidence">Certainty</th>
+              <th class="sortable" data-sort="last_seen">Last seen</th>
+            </tr>
+          </thead>
+          <tbody id="device-rows"></tbody>
+        </table>
+      </div>
+      <p id="devices-empty" class="empty-state" hidden>
+        <strong>No devices match</strong><span>Try clearing the filters.</span>
+      </p>
+    </section>
+
+    <!-- Ports ------------------------------------------------------------- -->
+    <section class="panel-view" data-view="ports">
+      <div class="toolbar">
+        <label class="field search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-search"/></svg>
+          <input id="port-search" type="search" placeholder="Port or service…" autocomplete="off">
+        </label>
+        <label class="check"><input type="checkbox" id="risk-only"> Only services worth a look</label>
+      </div>
+      <div id="port-list" class="port-list"></div>
+      <p id="ports-empty" class="empty-state" hidden>
+        <strong>No open ports recorded</strong>
+        <span>Run a Standard or Deep scan to inventory services.</span>
+      </p>
+    </section>
+
+    <!-- Findings ---------------------------------------------------------- -->
+    <section class="panel-view" data-view="findings">
+      <div class="posture-row">
+        <article class="posture accent-high">
+          <span>High</span><strong id="posture-high">0</strong>
+          <small>Act on these first</small>
+        </article>
+        <article class="posture accent-medium">
+          <span>Medium</span><strong id="posture-medium">0</strong>
+          <small>Worth changing</small>
+        </article>
+        <article class="posture accent-low">
+          <span>Low</span><strong id="posture-low">0</strong>
+          <small>Review when convenient</small>
+        </article>
+        <article class="posture accent-resolved">
+          <span>Fixed</span><strong id="posture-resolved">0</strong>
+          <small>No longer detected</small>
+        </article>
+      </div>
+      <div class="toolbar">
+        <label class="field search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-search"/></svg>
+          <input id="finding-search" type="search" placeholder="Device, issue, port…" autocomplete="off">
+        </label>
+        <div id="finding-filters" class="chip-row"></div>
+        <div class="toolbar-right">
+          <label class="check"><input type="checkbox" id="show-muted"> Show ignored</label>
+          <button id="run-audit" class="ghost-button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-shield-check"/></svg>
+            Re-check now
+          </button>
+        </div>
+      </div>
+      <div id="finding-list" class="finding-list"></div>
+      <p id="findings-empty" class="empty-state" hidden>
+        <strong>Nothing to fix</strong>
+        <span>Run a scan and then a check to look for exposed services, weak TLS and known issues.</span>
+      </p>
+    </section>
+
+    <!-- Timeline ---------------------------------------------------------- -->
+    <section class="panel-view" data-view="timeline">
+      <div class="toolbar">
+        <div class="segmented" role="group" aria-label="Timeline filter">
+          <button class="segment active" data-events="all">Everything</button>
+          <button class="segment" data-events="notable">Notable only</button>
+        </div>
+        <div class="toolbar-right">
+          <button id="ack-events" class="ghost-button">Mark all seen</button>
+        </div>
+      </div>
+      <div id="event-list" class="timeline"></div>
+      <p id="events-empty" class="empty-state" hidden>
+        <strong>No changes recorded yet</strong>
+        <span>Once two collections have run, everything that changes between them appears here.</span>
+      </p>
+    </section>
+
+    <!-- Activity ---------------------------------------------------------- -->
+    <section class="panel-view" data-view="activity">
+      <div class="overview-grid">
+        <section class="card">
+          <header class="card-head"><h2>Scan history</h2><p>Every collection this database has recorded.</p></header>
+          <div id="scan-history" class="scan-history"></div>
+        </section>
+        <section class="card">
+          <header class="card-head"><h2>This session</h2><p>Scans started from the browser.</p></header>
+          <div id="job-history" class="scan-history"></div>
+        </section>
+        <section class="card">
+          <header class="card-head">
+            <h2>Continuous monitoring</h2>
+            <p>Collections the viewer runs on its own while it is open. Off until you turn it on.</p>
+          </header>
+          <div id="schedule-list" class="schedule-list"></div>
+        </section>
+      </div>
     </section>
   </main>
-  <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Scan dialog -------------------------------------------------------- -->
+  <div id="scan-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="scan-modal-title">
+      <header class="modal-head">
+        <h2 id="scan-modal-title">Scan the network</h2>
+        <button class="icon-button" data-close-modal aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-close"/></svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <div id="scan-kinds" class="scan-kinds"></div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Target range</span>
+            <input id="scan-target" type="text" placeholder="192.168.1.0/24" autocomplete="off">
+          </label>
+          <label class="field" id="scan-profile-field">
+            <span>Depth</span>
+            <select id="scan-profile"></select>
+          </label>
+          <label class="field" id="scan-interface-field">
+            <span>Listen on</span>
+            <select id="scan-interface"></select>
+          </label>
+          <label class="field" id="scan-duration-field">
+            <span>Listen for</span>
+            <select id="scan-duration">
+              <option value="30">30 seconds</option>
+              <option value="60" selected>1 minute</option>
+              <option value="180">3 minutes</option>
+              <option value="600">10 minutes</option>
+            </select>
+          </label>
+        </div>
+        <p id="scan-hint" class="hint"></p>
+        <p id="scan-error" class="form-error" hidden></p>
+      </div>
+      <footer class="modal-foot">
+        <button class="ghost-button" data-close-modal>Cancel</button>
+        <button id="scan-start" class="primary-button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-radar"/></svg>
+          <span>Start scan</span>
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Device detail drawer ----------------------------------------------- -->
+  <aside id="drawer" class="drawer" hidden aria-label="Device detail">
+    <div class="drawer-backdrop" data-close-drawer></div>
+    <div class="drawer-card" role="dialog" aria-modal="false">
+      <header class="drawer-head">
+        <span id="drawer-icon" class="device-avatar" aria-hidden="true"><svg viewBox="0 0 24 24"><use href="#ic-unknown"/></svg></span>
+        <div class="drawer-title">
+          <span id="drawer-type" class="eyebrow"></span>
+          <h2 id="drawer-name"></h2>
+          <span id="drawer-sub" class="drawer-sub"></span>
+        </div>
+        <button class="icon-button" data-close-drawer aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-close"/></svg>
+        </button>
+      </header>
+      <div class="drawer-tabs" role="tablist">
+        <button class="drawer-tab active" data-dtab="summary">Summary</button>
+        <button class="drawer-tab" data-dtab="ports">Ports</button>
+        <button class="drawer-tab" data-dtab="fix">Fix <b id="drawer-fix-count">0</b></button>
+        <button class="drawer-tab" data-dtab="evidence">Evidence</button>
+        <button class="drawer-tab" data-dtab="edit">Details</button>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-pane active" data-dpane="summary">
+          <div class="certainty">
+            <div class="certainty-head"><span>How certain is this type?</span><strong id="drawer-confidence"></strong></div>
+            <div class="certainty-track"><i id="drawer-confidence-bar"></i></div>
+          </div>
+          <section class="drawer-section">
+            <h3>Why this type</h3>
+            <ul id="drawer-reasons" class="reason-list"></ul>
+          </section>
+          <section class="drawer-section">
+            <h3>Identity</h3>
+            <dl id="drawer-identity" class="facts"></dl>
+          </section>
+          <section class="drawer-section">
+            <h3>How it connects</h3>
+            <div id="drawer-topology" class="topology-facts"></div>
+          </section>
+          <section class="drawer-section">
+            <h3>Who it talks to</h3>
+            <div id="drawer-flows" class="flow-list"></div>
+          </section>
+        </div>
+        <div class="drawer-pane" data-dpane="ports">
+          <div id="drawer-ports" class="port-detail"></div>
+        </div>
+        <div class="drawer-pane" data-dpane="fix">
+          <div id="drawer-findings" class="finding-list compact"></div>
+        </div>
+        <div class="drawer-pane" data-dpane="evidence">
+          <div id="drawer-evidence" class="evidence-list"></div>
+        </div>
+        <div class="drawer-pane" data-dpane="edit">
+          <p class="hint">Anything you set here overrides what the scan guessed and survives future scans.</p>
+          <label class="field"><span>Display name</span><input id="edit-name" type="text" autocomplete="off"></label>
+          <label class="field"><span>Device type</span><select id="edit-type"></select></label>
+          <label class="field"><span>Owner</span><input id="edit-owner" type="text" placeholder="Who uses this device?" autocomplete="off"></label>
+          <label class="field"><span>Location</span><input id="edit-location" type="text" placeholder="Where is it?" autocomplete="off"></label>
+          <label class="field"><span>Notes</span><textarea id="edit-notes" rows="3" placeholder="Anything worth remembering"></textarea></label>
+          <div class="approval">
+            <span class="approval-label">Is this device expected here?</span>
+            <div class="segmented" role="group" aria-label="Approval">
+              <button class="segment" data-approved="1">Approved</button>
+              <button class="segment" data-approved="0">Not approved</button>
+              <button class="segment" data-approved="">Undecided</button>
+            </div>
+            <p class="hint">Once you approve some devices, anything unapproved is flagged in Fix.</p>
+          </div>
+          <button id="edit-save" class="primary-button"><span>Save</span></button>
+          <p id="edit-status" class="form-note" hidden></p>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js" defer></script>
 </body>
 </html>
