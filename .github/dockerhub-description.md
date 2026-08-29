@@ -28,6 +28,29 @@ docker compose up -d
 
 Open <http://127.0.0.1:8765>, then click **Scan network → Full sweep**.
 
+The first start prints the login. It is shown once:
+
+```console
+$ docker compose logs network-atlas | head -20
+  ┌─────────────────────────────────────────────────┐
+  │  Sign in to the viewer with these credentials.  │
+  │  They are shown once. Store them now.           │
+  ├─────────────────────────────────────────────────┤
+  │  username   admin                               │
+  │  password   32ymWclEDxCcettr                    │
+  └─────────────────────────────────────────────────┘
+```
+
+Change it from the account button in the viewer, or reset it with:
+
+```bash
+docker compose exec network-atlas python3 -m network_atlas account --reset-password
+```
+
+The container serves on every interface, so the viewer is reachable from other
+machines on your network. Set `ATLAS_HOST=127.0.0.1` to keep it on the host's own
+loopback instead.
+
 Or without compose:
 
 ```bash
@@ -83,9 +106,9 @@ to keep them across upgrades.
 - Runs as an unprivileged user (uid 10001), not root. Capabilities are granted to
   the three binaries that need raw sockets, and the container drops every other
   capability.
-- **The viewer has no authentication.** It binds `127.0.0.1` by default. Anyone
-  who can reach the port can read your whole inventory, so put it behind an SSH
-  tunnel rather than exposing it.
+- **The viewer requires a login.** One account, `admin`, is created on first
+  start with a random password printed to the log — nothing ships with a default
+  password. Eight wrong guesses lock the address out for five minutes.
 - **Only scan networks you own or are authorized to administer.** Public address
   ranges are refused unless you explicitly confirm the range is yours.
 - Network Atlas only ever reads. It does not test credentials, run exploits, or

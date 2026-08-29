@@ -77,6 +77,19 @@ CREATE TABLE IF NOT EXISTS observations (
     confidence REAL NOT NULL DEFAULT 0.5,
     observed_at TEXT NOT NULL
 );
+-- The viewer account. Exactly one: the person who opens the viewer first sets
+-- the username and password, and that is the login from then on. Only the web
+-- interface consults this; the command line opens this database directly and is
+-- not authenticated.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash BLOB NOT NULL,
+    password_salt BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    last_login TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_observations_device ON observations(device_id);
 -- observations also carries a UNIQUE index on (device_id, source, key, value),
 -- created by _dedupe_observations rather than here: an existing database has to
@@ -564,6 +577,50 @@ class AtlasDB:
             (cleaned, rank, device_id),
         )
         return True
+
+    # -- the viewer account ---------------------------------------------------
+    def account_exists(self) -> bool:
+        return bool(self.conn.execute("SELECT 1 FROM users LIMIT 1").fetchone())
+
+    def create_account(
+        self, username: str, password_hash: bytes, password_salt: bytes
+    ) -> int:
+        """Create the single viewer account.
+
+        Refuses if one already exists: the setup route is open before signup, so
+        without this check anyone reaching it could replace the account.
+        """
+        if self.account_exists():
+            raise ValueError("An account already exists.")
+        cursor = self.conn.execute(
+            """INSERT INTO users(username, password_hash, password_salt, created_at)
+               VALUES(?,?,?,?)""",
+            (username, password_hash, password_salt, utc_now()),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def account(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM users ORDER BY id LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_account_password(
+        self, user_id: int, password_hash: bytes, password_salt: bytes
+    ) -> bool:
+        cursor = self.conn.execute(
+            "UPDATE users SET password_hash=?, password_salt=? WHERE id=?",
+            (password_hash, password_salt, user_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def touch_account_login(self, user_id: int) -> None:
+        self.conn.execute(
+            "UPDATE users SET last_login=? WHERE id=?", (utc_now(), user_id)
+        )
+        self.conn.commit()
 
     def ensure_inferred_device(
         self,

@@ -37,7 +37,20 @@ curl -O https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/doc
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:8765>.
+Open <http://127.0.0.1:8765> — or the machine's own address, since the container
+serves to the whole network.
+
+The first start creates the login and prints it once:
+
+```bash
+docker compose logs network-atlas | head -20
+#   username   admin
+#   password   32ymWclEDxCcettr
+```
+
+Store it then; only a hash is kept. Change it from the account button in the
+viewer, or reset it with `docker compose exec network-atlas python3 -m
+network_atlas account --reset-password`.
 
 That pulls [`shortplanet/network-atlas`](https://hub.docker.com/r/shortplanet/network-atlas)
 and needs nothing else installed — every scanning tool is inside the image.
@@ -66,8 +79,9 @@ make doctor      # check which tools are available
 make start       # start the viewer
 ```
 
-Open <http://127.0.0.1:8765>, then use **Scan network** to collect data. No
-terminal needed after that.
+`make start` prints the login the first time it runs — username `admin` and a
+random password, shown once. Open <http://127.0.0.1:8765>, sign in, then use
+**Scan network** to collect data. No terminal needed after that.
 
 ## First run
 

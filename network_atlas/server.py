@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, netinfo, scheduler, webid
+from . import __version__, auth, netinfo, scheduler, webid
 from .collectors import PROFILE_LABELS, PROFILES
 from .db import AtlasDB
 from .jobs import JobError, JobManager
@@ -21,7 +21,16 @@ STATIC_FILES = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
+    "login.html": "text/html; charset=utf-8",
 }
+
+# The only paths reachable without a session. Kept as an explicit set rather than
+# a pattern: a rule like "anything under /login" is one typo away from exposing
+# the API, and this list should be read in full whenever it changes.
+#
+# login.html is self-contained -- its CSS is inline -- so an unauthenticated
+# browser needs no stylesheet or script from here to render the login form.
+PUBLIC_ROUTES = frozenset({"/login", "/login.html", "/api/login", "/healthz"})
 MAX_BODY = 64 * 1024
 
 # Mutating requests must prove they came from the app rather than from a page the
@@ -33,6 +42,7 @@ class AtlasHandler(BaseHTTPRequestHandler):
     db_path: Path
     jobs: JobManager
     scheduler: scheduler.Scheduler | None = None
+    sessions: auth.SessionStore
     server_version = f"NetworkAtlas/{__version__}"
     protocol_version = "HTTP/1.1"
 
@@ -89,11 +99,145 @@ class AtlasHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         return secrets.compare_digest(self.headers.get("X-Atlas-Token", ""), CSRF_TOKEN)
 
+    # -- authentication -------------------------------------------------------
+    def _cookie(self, name: str) -> str | None:
+        """Read one cookie without pulling in the whole http.cookies machinery."""
+        header = self.headers.get("Cookie") or ""
+        for part in header.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == name:
+                return value or None
+        return None
+
+    def _session(self) -> auth.Session | None:
+        return self.sessions.get(self._cookie(auth.SESSION_COOKIE))
+
+    def _client(self) -> str:
+        """The address used for login throttling.
+
+        Deliberately the peer address and never X-Forwarded-For: a header the
+        client controls would let one attacker present as thousands and defeat the
+        lockout entirely.
+        """
+        return self.client_address[0] if self.client_address else "unknown"
+
+    def _set_session_cookie(self, token: str) -> str:
+        # No Secure flag: this serves plain HTTP, and setting Secure would stop the
+        # cookie being sent at all. SameSite=Strict is the CSRF defence here.
+        return (
+            f"{auth.SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; "
+            f"Max-Age={auth.SESSION_TTL_SECONDS}"
+        )
+
+    def _require_session(self, route: str) -> auth.Session | None:
+        """Return the caller's session, or answer them and return None.
+
+        An API call gets 401 JSON so the page can react; a navigation gets the
+        login page, so typing the address in a browser lands somewhere useful.
+        """
+        session = self._session()
+        if session is not None:
+            return session
+        if route.startswith("/api/"):
+            self._json({"error": "authentication required"}, 401)
+        else:
+            self._static("login.html")
+        return None
+
     def _flag(self, query: dict[str, list[str]], name: str, default: bool = True) -> bool:
         raw = query.get(name, [None])[0]
         if raw is None:
             return default
         return raw.lower() not in ("0", "false", "no")
+
+    # -- login ----------------------------------------------------------------
+    def _login(self) -> None:
+        """Check a username and password and issue a session.
+
+        Failures say only that the credentials were wrong. Distinguishing "no such
+        user" from "wrong password" would confirm which account names exist, and
+        there is one account, so the distinction buys the caller nothing anyway.
+        """
+        client = self._client()
+        locked = self.sessions.lockout_remaining(client)
+        if locked:
+            self._json(
+                {"error": f"Too many failed attempts. Try again in {locked} seconds."},
+                429,
+            )
+            return
+        payload = self._body()
+        username = str(payload.get("username") or "").strip().lower()
+        password = str(payload.get("password") or "")
+
+        with AtlasDB(self.db_path) as db:
+            account = db.account()
+            ok = bool(
+                account
+                and username == account["username"]
+                and auth.verify_password(
+                    password, account["password_salt"], account["password_hash"]
+                )
+            )
+            if not ok:
+                lockout = self.sessions.record_failure(client)
+                self.log_message("failed login for %r from %s", username, client)
+                message = "Incorrect username or password."
+                if lockout:
+                    message = f"Too many failed attempts. Try again in {lockout} seconds."
+                self._json({"error": message}, 401)
+                return
+            db.touch_account_login(int(account["id"]))
+
+        self.sessions.record_success(client)
+        session = self.sessions.open(int(account["id"]), account["username"])
+        body = json.dumps({"username": session.username}).encode("utf-8")
+        self._headers(
+            200, "application/json; charset=utf-8", len(body),
+            Set_Cookie=self._set_session_cookie(session.token),
+        )
+        self.wfile.write(body)
+
+    def _change_password(self, payload: dict[str, object]) -> None:
+        """Replace the account password, then sign every other browser out.
+
+        The password arrives printed in a terminal, so it is likely to be sitting
+        in scrollback or a chat message. Being able to replace it from the viewer
+        is what makes that acceptable.
+        """
+        session = self._session()
+        if session is None:
+            self._json({"error": "authentication required"}, 401)
+            return
+        current = str(payload.get("current_password") or "")
+        replacement = str(payload.get("new_password") or "")
+        with AtlasDB(self.db_path) as db:
+            account = db.account()
+            if not account or not auth.verify_password(
+                current, account["password_salt"], account["password_hash"]
+            ):
+                # Throttled like a login: this endpoint accepts a password too.
+                self.sessions.record_failure(self._client())
+                self._json({"error": "The current password is not correct."}, 403)
+                return
+            try:
+                auth.check_password_strength(replacement)
+            except auth.AuthError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
+            salt, hashed = auth.hash_password(replacement)
+            db.set_account_password(int(account["id"]), hashed, salt)
+
+        # Everyone is signed out, including this browser, which is then handed a
+        # fresh session so the person who made the change is not logged out.
+        self.sessions.close_user(session.user_id)
+        renewed = self.sessions.open(session.user_id, session.username)
+        body = json.dumps({"changed": True}).encode("utf-8")
+        self._headers(
+            200, "application/json; charset=utf-8", len(body),
+            Set_Cookie=self._set_session_cookie(renewed.token),
+        )
+        self.wfile.write(body)
 
     # -- event stream ---------------------------------------------------------
     def _events(self) -> None:
@@ -127,6 +271,21 @@ class AtlasHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         route = parsed.path
         try:
+            if route == "/healthz":
+                # Liveness only, and deliberately public: the container health
+                # check runs before anyone has logged in. It reveals nothing about
+                # the network -- no counts, no names, no version.
+                self._json({"status": "ok"})
+                return
+            if route not in PUBLIC_ROUTES and self._require_session(route) is None:
+                return
+            if route in ("/login", "/login.html"):
+                # Already signed in: no reason to show the form again.
+                if self._session() is not None:
+                    self._headers(303, "text/plain; charset=utf-8", 0, Location="/")
+                    return
+                self._static("login.html")
+                return
             if route == "/api/stream":
                 self._events()
                 return
@@ -144,6 +303,9 @@ class AtlasHandler(BaseHTTPRequestHandler):
                     ],
                     "vantage": netinfo.summary(),
                     "server_time": utc_now(),
+                    "account": (lambda s: {"username": s.username} if s else None)(
+                        self._session()
+                    ),
                 })
                 return
 
@@ -214,10 +376,25 @@ class AtlasHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/login":
+                self._login()
+                return
+            if self._require_session(parsed.path) is None:
+                return
             if not self._authorized():
                 self._json({"error": "missing or invalid X-Atlas-Token"}, 403)
                 return
             payload = self._body()
+            if parsed.path == "/api/logout":
+                self.sessions.close(self._cookie(auth.SESSION_COOKIE))
+                self._headers(
+                    204, "application/json; charset=utf-8", 0,
+                    Set_Cookie=f"{auth.SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+                )
+                return
+            if parsed.path == "/api/account/password":
+                self._change_password(payload)
+                return
             if parsed.path == "/api/scan":
                 kind = str(payload.get("kind") or "scan")
                 parameters = payload.get("parameters")
@@ -312,8 +489,26 @@ class AtlasHandler(BaseHTTPRequestHandler):
         print(f"[viewer] {self.address_string()} {format_string % args}", flush=True)
 
 
+def ensure_account(db_path: Path) -> str | None:
+    """Create the viewer account on first run. Returns the password to print.
+
+    Returns None when an account already exists, because the stored password is a
+    hash and cannot be recovered -- only replaced, from the viewer or with
+    `network-atlas account --reset-password`.
+    """
+    with AtlasDB(db_path) as db:
+        if db.account_exists():
+            return None
+        password = auth.generate_password()
+        salt, hashed = auth.hash_password(password)
+        db.create_account(auth.DEFAULT_USERNAME, hashed, salt)
+        return password
+
+
 def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     manager = JobManager(db_path)
+    sessions = auth.SessionStore()
+    new_password = ensure_account(db_path)
 
     def submit(kind: str, parameters: dict[str, object]) -> object:
         return manager.submit(kind, parameters)
@@ -322,7 +517,10 @@ def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     handler = type(
         "ConfiguredAtlasHandler",
         (AtlasHandler,),
-        {"db_path": db_path, "jobs": manager, "scheduler": periodic},
+        {
+            "db_path": db_path, "jobs": manager, "scheduler": periodic,
+            "sessions": sessions,
+        },
     )
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
@@ -333,6 +531,35 @@ def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     periodic.start()
     print(f"Network Atlas {__version__}: http://{host}:{port}", flush=True)
     print(f"Database: {db_path}", flush=True)
+    if new_password:
+        # Printed once and never again: only the hash is kept. Boxed because in a
+        # container this scrolls past in `docker logs` and is easy to miss.
+        # Boxed because in a container this scrolls past in `docker logs` and is
+        # easy to miss. The width is computed rather than hand-aligned: the box
+        # characters made a literal drift out of true every time it was edited.
+        lines = [
+            "Sign in to the viewer with these credentials.",
+            "They are shown once. Store them now.",
+            None,  # divider
+            f"username   {auth.DEFAULT_USERNAME}",
+            f"password   {new_password}",
+        ]
+        width = max(len(line) for line in lines if line) + 4
+        rendered = ["  ┌" + "─" * width + "┐"]
+        for line in lines:
+            if line is None:
+                rendered.append("  ├" + "─" * width + "┤")
+            else:
+                rendered.append("  │  " + line.ljust(width - 4) + "  │")
+        rendered.append("  └" + "─" * width + "┘")
+        print(
+            "\n" + "\n".join(rendered) + "\n\n"
+            "  Change it from the viewer, or reset it with:\n"
+            "      network-atlas account --reset-password\n",
+            flush=True,
+        )
+    else:
+        print("Sign in as 'admin'. Lost the password? network-atlas account --reset-password", flush=True)
     print(
         f"Raw packets: {nmap_privileged()} | Passive capture: {can_capture()}",
         flush=True,

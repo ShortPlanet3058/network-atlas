@@ -195,8 +195,20 @@ function toast(message) {
 }
 
 /* ---------- API ---------- */
+// A session lasts 12 hours and is extended on use, so a 401 means it has really
+// gone -- expired, revoked by a password change, or the server restarted. There is
+// nothing the page can do about it and every panel would fill with the same error,
+// so hand the browser to the login form instead.
+function handleExpiredSession() {
+  if (window.location.pathname !== "/login") window.location.replace("/login");
+}
+
 async function get(path) {
   const response = await fetch(path, { headers: { Accept: "application/json" } });
+  if (response.status === 401) {
+    handleExpiredSession();
+    throw new Error("Session expired");
+  }
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
 }
@@ -207,6 +219,10 @@ async function post(path, body) {
     headers: { "Content-Type": "application/json", "X-Atlas-Token": state.token || "" },
     body: JSON.stringify(body || {}),
   });
+  if (response.status === 401 && path !== "/api/logout") {
+    handleExpiredSession();
+    throw new Error("Session expired");
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
   return payload;
@@ -234,12 +250,78 @@ function initTheme() {
 async function loadSession() {
   const session = await get("/api/session");
   state.token = session.token;
+  state.account = session.account || null;
   state.capabilities = session.capabilities || {};
   state.profiles = session.profiles || [];
   state.vantage = session.vantage || null;
   state.scanProfile = (state.profiles[1] || state.profiles[0] || {}).id || "standard";
   renderVantageLine();
   renderIsolationBanner();
+  renderAccount();
+}
+
+/* ---------- account ---------- */
+function renderAccount() {
+  const button = $("#open-account");
+  // Hidden when the server reports no account, which means it is running without
+  // authentication. Showing a "sign out" it cannot honour would be a lie.
+  button.hidden = !state.account;
+  if (state.account) {
+    $("#account-username").textContent = state.account.username;
+    button.title = `Account: ${state.account.username}`;
+  }
+}
+
+function openAccountModal() {
+  $("#account-error").hidden = true;
+  $("#account-done").hidden = true;
+  ["#account-current", "#account-new", "#account-repeat"].forEach((id) => { $(id).value = ""; });
+  $("#account-modal").hidden = false;
+  $("#account-current").focus();
+}
+
+async function changePassword() {
+  const current = $("#account-current").value;
+  const next = $("#account-new").value;
+  const repeat = $("#account-repeat").value;
+  const error = $("#account-error");
+  const done = $("#account-done");
+  error.hidden = true;
+  done.hidden = true;
+
+  // Checked here as well as on the server: catching a typo before a round trip
+  // is friendlier, and the server still refuses anything it should.
+  if (!current || !next) {
+    error.textContent = "Fill in your current and new password.";
+    error.hidden = false;
+    return;
+  }
+  if (next !== repeat) {
+    error.textContent = "The two new passwords do not match.";
+    error.hidden = false;
+    return;
+  }
+
+  const button = $("#account-save");
+  button.disabled = true;
+  try {
+    await post("/api/account/password", { current_password: current, new_password: next });
+    ["#account-current", "#account-new", "#account-repeat"].forEach((id) => { $(id).value = ""; });
+    done.hidden = false;
+    toast("Password changed");
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function signOut() {
+  try {
+    await post("/api/logout", {});
+  } catch { /* signing out locally matters more than the response */ }
+  window.location.replace("/login");
 }
 
 async function loadData() {
@@ -1364,6 +1446,16 @@ function openScanModal() {
 
 const closeScanModal = () => { $("#scan-modal").hidden = true; };
 
+// Closes whichever dialog the clicked control belongs to. The scan modal used to
+// be closed by name, which meant a second dialog's backdrop dismissed the wrong
+// one.
+function closeEnclosingModal(event) {
+  const modal = event.currentTarget.closest(".modal");
+  if (modal) modal.hidden = true;
+}
+
+const openModals = () => $$(".modal").filter((modal) => !modal.hidden);
+
 async function startScan() {
   const kind = currentScanKind();
   const parameters = {};
@@ -1543,12 +1635,15 @@ function wire() {
     loadData().then(() => toast("Inventory reloaded")).catch((error) => toast(error.message));
   });
   $("#open-scan").addEventListener("click", openScanModal);
+  $("#open-account").addEventListener("click", openAccountModal);
+  $("#account-save").addEventListener("click", changePassword);
+  $("#account-logout").addEventListener("click", signOut);
   $("#scan-start").addEventListener("click", startScan);
   $("#scan-profile").addEventListener("change", (event) => {
     state.scanProfile = event.target.value;
     updateScanForm();
   });
-  $$("[data-close-modal]").forEach((node) => node.addEventListener("click", closeScanModal));
+  $$("[data-close-modal]").forEach((node) => node.addEventListener("click", closeEnclosingModal));
   $$("[data-close-drawer]").forEach((node) => node.addEventListener("click", closeDrawer));
   $("#live-cancel").addEventListener("click", async () => {
     if (!state.activeJob) return;
@@ -1594,7 +1689,8 @@ function wire() {
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!$("#scan-modal").hidden) closeScanModal();
+    const open = openModals();
+    if (open.length) open.forEach((modal) => { modal.hidden = true; });
     else if (!$("#drawer").hidden) closeDrawer();
   });
 }

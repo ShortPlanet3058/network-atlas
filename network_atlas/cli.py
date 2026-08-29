@@ -9,7 +9,7 @@ from typing import Callable
 
 from . import __version__
 from . import findings as findings_module
-from . import ingest, netinfo, scheduler, wireless
+from . import auth, ingest, netinfo, scheduler, wireless
 from . import events
 from .classifier import classify_all
 from .collectors import (
@@ -118,7 +118,19 @@ def build_parser() -> argparse.ArgumentParser:
     viewer.add_argument("--port", type=int, default=8765)
     viewer.add_argument(
         "--allow-remote", action="store_true",
-        help="Acknowledge that the unauthenticated viewer will be remotely reachable",
+        help="Serve on a non-loopback address so other machines on the network can reach it",
+    )
+
+    account = sub.add_parser(
+        "account", help="Show or reset the web viewer's login (the CLI itself needs none)"
+    )
+    account.add_argument(
+        "--reset-password", action="store_true",
+        help="Set a new random password and print it. Signs out every browser.",
+    )
+    account.add_argument(
+        "--set-password", metavar="PASSWORD",
+        help="Set a specific password instead of a generated one",
     )
 
     label = sub.add_parser("label", help="Apply a trusted name or type override")
@@ -224,12 +236,58 @@ def _record_import(
         raise
 
 
+def _account(db: AtlasDB, args: argparse.Namespace) -> dict[str, object]:
+    """Show or reset the viewer login.
+
+    This is the recovery path, and it is deliberately unauthenticated: reaching it
+    means you already have the machine and the database, which is strictly more
+    access than the viewer grants. The web interface is what needs a password.
+    """
+    if args.set_password:
+        auth.check_password_strength(args.set_password)
+        password = args.set_password
+    elif args.reset_password:
+        password = auth.generate_password()
+    else:
+        account = db.account()
+        if not account:
+            return {
+                "account": None,
+                "note": "No account yet; one is created with a random password when the viewer first starts.",
+            }
+        return {
+            "username": account["username"],
+            "created_at": account["created_at"],
+            "last_login": account["last_login"] or "never",
+            "note": "The password is stored hashed and cannot be shown. Use --reset-password.",
+        }
+
+    salt, hashed = auth.hash_password(password)
+    existing = db.account()
+    if existing:
+        db.set_account_password(int(existing["id"]), hashed, salt)
+        username = existing["username"]
+    else:
+        username = auth.DEFAULT_USERNAME
+        db.create_account(username, hashed, salt)
+    return {
+        "username": username,
+        "password": password,
+        "note": "Every signed-in browser has been signed out. Store this password now.",
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "serve":
             if args.host not in ("127.0.0.1", "localhost", "::1") and not args.allow_remote:
-                raise ValueError("Refusing a remote bind without --allow-remote; the viewer has no authentication")
+                raise ValueError(
+                    f"Refusing to serve on {args.host} without --allow-remote. Exposing the "
+                    "viewer to the network should be deliberate: it publishes the findings "
+                    "list, which is an inventory of exploitable services here. A login is "
+                    "required either way."
+                )
             with AtlasDB(args.db):
                 pass
             serve(args.db.expanduser().resolve(), args.host, args.port)
@@ -297,6 +355,8 @@ def main(argv: list[str] | None = None) -> None:
             elif args.command == "import-mdns":
                 count = _record_import(db, "mdns-import", args.path, import_avahi, text=True)
                 _print_result({"imported_services": count})
+            elif args.command == "account":
+                _print_result(_account(db, args))
             elif args.command == "label":
                 device_id = db.set_manual_label(args.selector, args.name, args.type)
                 _print_result({"device_id": device_id, "status": "updated"})

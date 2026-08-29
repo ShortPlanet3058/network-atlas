@@ -72,21 +72,64 @@ a tool should not start doing that because it happens to be running.
 
 It also runs only while the viewer runs, so stopping the viewer stops the scanning.
 
-## The viewer has no authentication
+## The viewer requires a login
 
-Anyone who can reach the port can read your entire inventory: device names,
-addresses, open ports and findings. That is a detailed map of your network, and it is
-exactly what an attacker would want.
+Anyone who can reach the port would otherwise read your entire inventory: device
+names, addresses, open ports and findings. The findings list in particular is a
+ranked inventory of exploitable services on your network with remediation notes
+attached — the single most useful document an attacker on the same LAN could find,
+because it is their reconnaissance already done and prioritised.
 
-So:
+So the web interface asks for a password:
 
-- It binds `127.0.0.1` by default.
-- It **refuses any non-loopback bind** unless you pass `--allow-remote`.
-- Mutating requests require a per-process CSRF token.
+- There is **one account**, `admin`. It is created the first time the server
+  starts, with a random password printed to the terminal — so a fresh container
+  shows its credentials in `docker logs` and nothing ships with a default
+  password. It is shown once; only a hash is kept.
+- Passwords are hashed with **scrypt** and a per-account salt.
+- **Eight wrong guesses** from one address locks that address out for five
+  minutes. The correct password is refused during the lockout too, or the limit
+  would be decorative.
+- A wrong username and a wrong password produce the **identical** message, so the
+  form cannot be used to discover account names.
+- Sessions are held **server-side** and can therefore be revoked. Changing the
+  password signs every other browser out immediately.
+- The session cookie is `HttpOnly` and `SameSite=Strict`. Mutating requests
+  additionally require a per-process CSRF token, so a session cookie alone is not
+  enough.
+- The only paths reachable without signing in are the login form, the login
+  endpoint, and `/healthz` — which returns `{"status": "ok"}` and nothing else.
 - Responses carry a strict CSP, `X-Frame-Options: DENY` and `no-store`.
 
-If you need remote access, put it behind something that authenticates — an SSH
-tunnel is the simplest:
+Lost the password? Reset it from the machine itself:
+
+```bash
+network-atlas account --reset-password
+# in a container:
+docker compose exec network-atlas python3 -m network_atlas account --reset-password
+```
+
+There is no reset over HTTP, because a reset over HTTP is a way in.
+
+## The command line is not authenticated
+
+`network-atlas scan`, `passive`, `snmp` and the rest open the database directly
+and never speak to the server, so they never ask for a password. That is
+deliberate: running them means you already have the machine and the database,
+which is strictly more access than the viewer grants. The password protects the
+**network** interface, not the tool.
+
+## Serving it to your network
+
+The viewer still refuses a non-loopback bind unless you pass `--allow-remote`,
+even though it now authenticates. Exposing your network map should be a decision
+someone made on purpose, not a default they inherited.
+
+Traffic is plain HTTP, so the password crosses your LAN in the clear and a session
+cookie could be read by anyone capturing traffic on it. On a home or office
+network you control that is usually an acceptable trade for not running a
+certificate authority. If it is not, put the viewer behind a reverse proxy that
+terminates TLS, or reach it through a tunnel instead:
 
 ```bash
 ssh -L 8765:127.0.0.1:8765 user@host

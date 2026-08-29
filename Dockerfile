@@ -90,9 +90,14 @@ EXPOSE 8765
 # host's own networking, so binding 0.0.0.0 is the intended configuration --
 # publish it to 127.0.0.1 on the host, as the compose file does.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/summary', timeout=4)"
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=4)"
 
 ENTRYPOINT ["python3", "-m", "network_atlas"]
+# Bound to every interface so the viewer is reachable from other machines on the
+# LAN, which is the point of running it in a container. Safe to do because the
+# viewer now requires a login: a random password is generated on first start and
+# printed to the log, so `docker logs network-atlas` shows the credentials once
+# and nothing ships with a default password.
 CMD ["serve", "--host", "0.0.0.0", "--port", "8765", "--allow-remote"]
 
 # Standard OCI annotations, declared last so editing them does not invalidate the

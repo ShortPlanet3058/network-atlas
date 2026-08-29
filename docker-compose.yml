@@ -54,16 +54,26 @@ services:
     environment:
       NETWORK_ATLAS_DB: /data/atlas.db
 
-    # Loopback only: the viewer has no authentication, and under host networking
-    # this is the host's own loopback. Because the port is the HOST's port, it
-    # collides with anything already listening there -- including a natively run
-    # `make start`. Override with ATLAS_PORT if 8765 is taken.
+    # Reachable from the LAN. The viewer requires a login, and a random password
+    # is generated the first time this starts and printed to the log:
+    #
+    #     docker compose logs network-atlas | head -20
+    #
+    # It is shown once. Change it from the viewer, or reset it with
+    # `docker compose exec network-atlas python3 -m network_atlas account
+    # --reset-password`.
+    #
+    # Set ATLAS_HOST=127.0.0.1 to keep it on the host's own loopback instead.
+    # Because the port is the HOST's port under host networking, it collides with
+    # anything already listening there -- including a natively run `make start`.
+    # Override with ATLAS_PORT if 8765 is taken.
     command:
       - serve
       - --host
-      - 127.0.0.1
+      - ${ATLAS_HOST:-0.0.0.0}
       - --port
       - ${ATLAS_PORT:-8765}
+      - --allow-remote
 
     restart: unless-stopped
 

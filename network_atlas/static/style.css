@@ -567,6 +567,10 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .modal-head h2 { font-size: 16px; }
 .modal-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 18px; border-top: 1px solid var(--border); }
+/* The account dialog puts Sign out on the left, away from the confirm button, so
+   the destructive-by-surprise action is not adjacent to the one being aimed at. */
+#account-modal .modal-foot { justify-content: space-between; }
+.modal-note { margin: 0 0 14px; font-size: 13px; color: var(--text-muted); }
 .scan-kinds { display: grid; gap: 8px; }
 .scan-kind {
   display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; text-align: left;

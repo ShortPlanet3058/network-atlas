@@ -36,9 +36,28 @@ docker compose exec network-atlas python3 -m network_atlas <command>
 `serve` options: `--host` (default `127.0.0.1`), `--port` (default `8765`),
 `--allow-remote`.
 
-**The viewer has no authentication.** It refuses any non-loopback bind unless you
-pass `--allow-remote`, which is an acknowledgement that anyone who can reach the
-port can read your whole inventory.
+**The viewer requires a login.** The first time it starts it creates one account,
+`admin`, with a random password printed to the terminal. It is shown once — only a
+hash is kept — so store it then. Change it from the viewer, under the account
+button in the top bar.
+
+`--allow-remote` is still required to serve on a non-loopback address. The login
+makes that safe; the flag keeps it deliberate.
+
+### `account` — the viewer's login
+
+```bash
+network-atlas account                    # who the account is, and when it last signed in
+network-atlas account --reset-password   # new random password, printed
+network-atlas account --set-password '…' # a password you choose
+```
+
+The recovery path when the password is lost. Resetting signs every browser out.
+
+This command needs no password itself, and neither does any other command here:
+they open the database directly and never speak to the server. Running them means
+you already have the machine and the database, which is more access than the
+viewer grants. The password protects the network interface, not the tool.
 
 ---
 

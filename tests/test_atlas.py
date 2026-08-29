@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import xml.etree.ElementTree as ET
@@ -1792,6 +1797,302 @@ class AtlasTestCase(unittest.TestCase):
         self.assertEqual(classify(openwrt)[0], "router")
         self.assertEqual(classify(yealink)[0], "phone")
         self.assertEqual(classify(shield)[0], "media")
+
+
+class ViewerAuthTestCase(unittest.TestCase):
+    """The viewer's authentication gate, exercised over real HTTP.
+
+    Worth the weight of a live server: this gate is the only thing between the
+    LAN and the findings list, and a mocked handler would not catch a routing
+    mistake that leaves a path reachable.
+    """
+
+    PASSWORD = "a-sufficiently-long-password"
+
+    def setUp(self) -> None:
+        from network_atlas import auth, server
+        from network_atlas.jobs import JobManager
+
+        self.auth = auth
+        self.server_module = server
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db_path = Path(self.temp.name) / "atlas.db"
+        with AtlasDB(self.db_path) as db:
+            salt, hashed = auth.hash_password(self.PASSWORD)
+            db.create_account(auth.DEFAULT_USERNAME, hashed, salt)
+            # One device, so an authenticated read has something to return and a
+            # leak would be visible rather than an empty list either way.
+            import_arp_scan(db, "10.23.45.7 aa:bb:cc:dd:ee:77 Test Vendor")
+
+        self.sessions = auth.SessionStore()
+        handler = type(
+            "TestAtlasHandler",
+            (server.AtlasHandler,),
+            {
+                "db_path": self.db_path,
+                "jobs": JobManager(self.db_path),
+                "scheduler": None,
+                "sessions": self.sessions,
+                # The handler logs every request to stderr; silence for the suite.
+                "log_message": lambda self, *args, **kwargs: None,
+                "log_error": lambda self, *args, **kwargs: None,
+            },
+        )
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd.daemon_threads = True
+        # A short poll interval only so shutdown() returns promptly: the default
+        # of 0.5s made teardown, not the requests, the cost of this whole class.
+        thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    # -- helpers --------------------------------------------------------------
+    def call(self, path, method="GET", body=None, cookie=None, token=None):
+        request = urllib.request.Request(f"{self.base}{path}", method=method)
+        if body is not None:
+            request.data = json.dumps(body).encode()
+            request.add_header("Content-Type", "application/json")
+        if cookie:
+            request.add_header("Cookie", cookie)
+        if token:
+            request.add_header("X-Atlas-Token", token)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, response.read(), response.headers
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(), exc.headers
+
+    def sign_in(self, password=None):
+        """Return (cookie, csrf token) for a signed-in browser."""
+        status, _, headers = self.call(
+            "/api/login", "POST",
+            {"username": "admin", "password": password or self.PASSWORD},
+        )
+        self.assertEqual(status, 200)
+        cookie = headers["Set-Cookie"].split(";")[0]
+        _, payload, _ = self.call("/api/session", cookie=cookie)
+        return cookie, json.loads(payload)["token"]
+
+    # -- the boundary ---------------------------------------------------------
+    def test_public_routes_are_exactly_these(self) -> None:
+        """The whole security boundary, asserted in one place.
+
+        This set is what an anonymous caller can reach. Widening it is how an API
+        ends up exposed, so the test states the full contents rather than checking
+        that particular members are present.
+        """
+        self.assertEqual(
+            set(self.server_module.PUBLIC_ROUTES),
+            {"/login", "/login.html", "/api/login", "/healthz"},
+        )
+
+    def test_every_api_route_refuses_an_anonymous_caller(self) -> None:
+        for route in (
+            "/api/devices", "/api/findings", "/api/session", "/api/summary",
+            "/api/graph", "/api/jobs", "/api/tree", "/api/events", "/api/services",
+            "/api/schedule", "/api/flows", "/api/scans",
+        ):
+            with self.subTest(route=route):
+                status, payload, _ = self.call(route)
+                self.assertEqual(status, 401, f"{route} answered {status}")
+                self.assertNotIn(b"aa:bb:cc:dd:ee:77", payload)
+
+    def test_anonymous_writes_are_refused(self) -> None:
+        for route, body in (
+            ("/api/scan", {"kind": "neighbours"}),
+            ("/api/account/password", {"current_password": "x", "new_password": "y"}),
+            ("/api/logout", {}),
+        ):
+            with self.subTest(route=route):
+                status, _, _ = self.call(route, "POST", body)
+                self.assertEqual(status, 401)
+
+    def test_pages_serve_the_login_form_when_signed_out(self) -> None:
+        for route in ("/", "/index.html", "/app.js", "/login"):
+            with self.subTest(route=route):
+                status, payload, _ = self.call(route)
+                self.assertEqual(status, 200)
+                self.assertIn(b"<title>Sign in", payload)
+
+    def test_healthz_is_public_and_reveals_nothing(self) -> None:
+        status, payload, _ = self.call("/healthz")
+        self.assertEqual(status, 200)
+        # Liveness only: no version, no counts, no device data.
+        self.assertEqual(json.loads(payload), {"status": "ok"})
+
+    # -- signing in -----------------------------------------------------------
+    def test_wrong_username_and_wrong_password_are_indistinguishable(self) -> None:
+        """Differing messages would confirm which account names exist."""
+        _, wrong_password, _ = self.call(
+            "/api/login", "POST", {"username": "admin", "password": "not-the-password"}
+        )
+        _, wrong_username, _ = self.call(
+            "/api/login", "POST", {"username": "nobody", "password": self.PASSWORD}
+        )
+        self.assertEqual(json.loads(wrong_password), json.loads(wrong_username))
+
+    def test_login_issues_a_hardened_cookie(self) -> None:
+        _, _, headers = self.call(
+            "/api/login", "POST", {"username": "admin", "password": self.PASSWORD}
+        )
+        cookie = headers["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+
+    def test_login_is_not_case_sensitive_in_the_username(self) -> None:
+        status, _, _ = self.call(
+            "/api/login", "POST", {"username": "ADMIN", "password": self.PASSWORD}
+        )
+        self.assertEqual(status, 200)
+
+    def test_a_session_unlocks_the_inventory(self) -> None:
+        cookie, _ = self.sign_in()
+        status, payload, _ = self.call("/api/devices", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"aa:bb:cc:dd:ee:77", payload)
+
+    def test_a_write_needs_both_the_session_and_the_csrf_token(self) -> None:
+        """The cookie proves who; the token proves the app, not another site."""
+        cookie, token = self.sign_in()
+        # A label write rather than a scan: this exercises the same gate without
+        # starting a collector that would race the test's own connection.
+        body = {"selector": "10.23.45.7", "name": "Labelled", "type": "computer"}
+        status, _, _ = self.call("/api/label", "POST", body, cookie=cookie)
+        self.assertEqual(status, 403)
+        status, _, _ = self.call("/api/label", "POST", body, cookie=cookie, token=token)
+        self.assertEqual(status, 200)
+
+    def test_repeated_failures_lock_the_client_out(self) -> None:
+        for _ in range(self.auth.MAX_FAILURES):
+            self.call("/api/login", "POST", {"username": "admin", "password": "wrong"})
+        # The correct password must also be refused, or the lockout is decorative.
+        status, _, _ = self.call(
+            "/api/login", "POST", {"username": "admin", "password": self.PASSWORD}
+        )
+        self.assertEqual(status, 429)
+
+    # -- changing the password ------------------------------------------------
+    def test_changing_the_password_revokes_other_sessions(self) -> None:
+        other_cookie, _ = self.sign_in()
+        cookie, token = self.sign_in()
+        status, _, headers = self.call(
+            "/api/account/password", "POST",
+            {"current_password": self.PASSWORD, "new_password": "another-long-password"},
+            cookie=cookie, token=token,
+        )
+        self.assertEqual(status, 200)
+        # The browser that made the change keeps working, on a fresh session.
+        self.assertEqual(self.call("/api/devices", cookie=cookie)[0], 401)
+        renewed = headers["Set-Cookie"].split(";")[0]
+        self.assertEqual(self.call("/api/devices", cookie=renewed)[0], 200)
+        # Every other browser is signed out.
+        self.assertEqual(self.call("/api/devices", cookie=other_cookie)[0], 401)
+        # And the old password no longer works.
+        self.assertEqual(
+            self.call("/api/login", "POST",
+                      {"username": "admin", "password": self.PASSWORD})[0],
+            401,
+        )
+
+    def test_a_weak_replacement_password_is_refused(self) -> None:
+        cookie, token = self.sign_in()
+        status, payload, _ = self.call(
+            "/api/account/password", "POST",
+            {"current_password": self.PASSWORD, "new_password": "short"},
+            cookie=cookie, token=token,
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("at least", json.loads(payload)["error"])
+
+    def test_the_current_password_must_be_correct(self) -> None:
+        cookie, token = self.sign_in()
+        status, _, _ = self.call(
+            "/api/account/password", "POST",
+            {"current_password": "wrong", "new_password": "another-long-password"},
+            cookie=cookie, token=token,
+        )
+        self.assertEqual(status, 403)
+
+    def test_logout_clears_the_cookie_and_the_session(self) -> None:
+        cookie, token = self.sign_in()
+        status, _, headers = self.call("/api/logout", "POST", {}, cookie=cookie, token=token)
+        self.assertEqual(status, 204)
+        self.assertIn("Max-Age=0", headers["Set-Cookie"])
+        self.assertEqual(self.call("/api/devices", cookie=cookie)[0], 401)
+
+
+class AccountTestCase(unittest.TestCase):
+    """Account rules that need no server."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.db = AtlasDB(Path(self.temp.name) / "atlas.db")
+        self.addCleanup(self.db.close)
+
+    def test_only_one_account_can_exist(self) -> None:
+        from network_atlas import auth
+
+        salt, hashed = auth.hash_password("a-long-enough-password")
+        self.db.create_account("admin", hashed, salt)
+        with self.assertRaises(ValueError):
+            self.db.create_account("someone-else", hashed, salt)
+
+    def test_password_hashing_is_salted_and_verifiable(self) -> None:
+        from network_atlas import auth
+
+        first_salt, first = auth.hash_password("the-same-password")
+        second_salt, second = auth.hash_password("the-same-password")
+        # Distinct salts, so identical passwords do not produce identical hashes.
+        self.assertNotEqual(first_salt, second_salt)
+        self.assertNotEqual(first, second)
+        self.assertTrue(auth.verify_password("the-same-password", first_salt, first))
+        self.assertFalse(auth.verify_password("another-password", first_salt, first))
+        self.assertFalse(auth.verify_password("", first_salt, first))
+
+    def test_usernames_are_validated_and_lowercased(self) -> None:
+        from network_atlas import auth
+
+        self.assertEqual(auth.normalize_username("  Admin "), "admin")
+        for bad in ("a", "-leading", "has space", "x" * 40, "", "wi;ld"):
+            with self.subTest(username=bad), self.assertRaises(auth.AuthError):
+                auth.normalize_username(bad)
+
+    def test_password_strength_floor(self) -> None:
+        from network_atlas import auth
+
+        with self.assertRaises(auth.AuthError):
+            auth.check_password_strength("short")
+        auth.check_password_strength("x" * auth.MIN_PASSWORD_LENGTH)
+        with self.assertRaises(auth.AuthError):
+            # An unbounded input would make scrypt a denial-of-service vector.
+            auth.check_password_strength("x" * (auth.MAX_PASSWORD_LENGTH + 1))
+
+    def test_first_start_creates_the_account_and_returns_the_password(self) -> None:
+        """The password is shown once because only its hash is kept."""
+        from network_atlas import auth, server
+
+        path = Path(self.temp.name) / "fresh.db"
+        password = server.ensure_account(path)
+        self.assertIsNotNone(password)
+        with AtlasDB(path) as db:
+            account = db.account()
+            self.assertEqual(account["username"], auth.DEFAULT_USERNAME)
+            self.assertTrue(
+                auth.verify_password(
+                    password, account["password_salt"], account["password_hash"]
+                )
+            )
+            # The password itself is nowhere in the row.
+            self.assertNotIn(password.encode(), bytes(account["password_hash"]))
+        # A second start must not mint a new password over the existing account.
+        self.assertIsNone(server.ensure_account(path))
 
 
 if __name__ == "__main__":

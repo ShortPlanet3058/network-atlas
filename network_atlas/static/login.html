@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<!--
+  Self-contained on purpose. This is the one page an unauthenticated browser can
+  fetch, so it must not pull a stylesheet or a script from a protected path: the
+  CSS is inline and the script is a few lines at the end.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Network Atlas</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8; --panel: #ffffff; --ink: #1a1d21; --muted: #5f6b7a;
+    --line: #dfe3e8; --accent: #2563eb; --accent-ink: #ffffff;
+    --danger-bg: #fdecec; --danger-line: #f3b8b8; --danger-ink: #8c1d1d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --panel: #1c2024; --ink: #e8eaed; --muted: #9aa4b2;
+      --line: #2c3238; --accent: #3b82f6; --accent-ink: #ffffff;
+      --danger-bg: #3a1d1d; --danger-line: #6b2b2b; --danger-ink: #f5b5b5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    padding: 24px; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main {
+    width: 100%; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 28px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+  }
+  .mark { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .mark svg { width: 26px; height: 26px; color: var(--accent); }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 9px 11px; margin-bottom: 16px; font: inherit;
+    color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  button {
+    width: 100%; padding: 10px; font: inherit; font-weight: 600; cursor: pointer;
+    color: var(--accent-ink); background: var(--accent);
+    border: 1px solid transparent; border-radius: 7px;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: .6; cursor: progress; }
+  #error {
+    margin: 0 0 16px; padding: 9px 11px; font-size: 13px; border-radius: 7px;
+    background: var(--danger-bg); border: 1px solid var(--danger-line); color: var(--danger-ink);
+  }
+  [hidden] { display: none !important; }
+  .hint { margin: 18px 0 0; font-size: 12px; color: var(--muted); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="2.5"/><circle cx="4" cy="5" r="2"/>
+      <circle cx="20" cy="5" r="2"/><circle cx="4" cy="19" r="2"/><circle cx="20" cy="19" r="2"/>
+      <path d="M10 10.5 5.6 6.4M14 10.5l4.4-4.1M10 13.5l-4.4 4.1M14 13.5l4.4 4.1"/>
+    </svg>
+    <h1>Network Atlas</h1>
+  </div>
+  <p class="sub">Sign in to view the network map.</p>
+  <p id="error" hidden role="alert"></p>
+  <form id="form" autocomplete="on">
+    <label for="username">Username</label>
+    <input id="username" name="username" value="admin" autocomplete="username"
+           autocapitalize="none" spellcheck="false" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="current-password" required autofocus>
+    <button id="submit" type="submit">Sign in</button>
+  </form>
+  <p class="hint">
+    The password was printed when the server first started. Lost it? Run
+    <code>network-atlas account --reset-password</code> on the host.
+  </p>
+</main>
+<script>
+  const form = document.getElementById("form");
+  const error = document.getElementById("error");
+  const submit = document.getElementById("submit");
+
+  function fail(message) {
+    error.textContent = message;
+    error.hidden = false;
+    submit.disabled = false;
+    submit.textContent = "Sign in";
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    submit.disabled = true;
+    submit.textContent = "Signing in…";
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value,
+        }),
+      });
+      if (response.ok) {
+        // Replace rather than assign: the login page should not sit in history
+        // where Back would return to it after signing in.
+        window.location.replace("/");
+        return;
+      }
+      const body = await response.json().catch(() => ({}));
+      fail(body.error || `Sign-in failed (HTTP ${response.status}).`);
+    } catch {
+      fail("Could not reach the server.");
+    }
+  });
+</script>
+</body>
+</html>

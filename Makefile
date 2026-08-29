@@ -111,12 +111,25 @@ start: ensure-db ## Start the viewer in the background
 		echo "Already running (PID $$pid): http://$(HOST):$(PORT)"; exit 0; \
 	fi; \
 	rm -f "$(PID_FILE)"; \
+	before=$$(wc -l <"$(LOG_FILE)" 2>/dev/null || echo 0); \
 	nohup env PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m network_atlas --db "$(DB)" \
 		serve --host "$(HOST)" --port "$(PORT)" >>"$(LOG_FILE)" 2>&1 & \
 	echo $$! >"$(PID_FILE)"; \
 	sleep 0.5; \
 	if pid="$$(viewer_pid)"; then \
 		echo "Started (PID $$pid): http://$(HOST):$(PORT)"; \
+		banner="$$(tail -n +$$((before + 1)) "$(LOG_FILE)" 2>/dev/null \
+			| sed -n '/They are shown once/,/^  └/p' \
+			| sed -n '/username/p;/password/p' || true)"; \
+		if [ -n "$$banner" ]; then \
+			echo ""; \
+			echo "The viewer created its login. This is the only time it is shown:"; \
+			echo ""; \
+			printf '%s\n' "$$banner"; \
+			echo ""; \
+			echo "Change it from the account button in the viewer, or run:"; \
+			echo "    make account-reset"; \
+		fi; \
 	else \
 		echo "Viewer failed to start. Recent log output:" >&2; \
 		tail -20 "$(LOG_FILE)" >&2 || true; \
@@ -391,6 +404,12 @@ docker-push-single: ## Publish only this machine's architecture (no buildx neede
 		--build-arg BUILD_DATE="$(BUILD_DATE)" .; \
 	docker push "$(REPOSITORY):$(VERSION)"; \
 	docker push "$(REPOSITORY):latest"
+
+account: ## Show the viewer's login account
+	@$(ATLAS) account
+
+account-reset: ## Set a new random viewer password and print it
+	@$(ATLAS) account --reset-password
 
 version: ## Print the version that would be published
 	@echo "$(VERSION)"
