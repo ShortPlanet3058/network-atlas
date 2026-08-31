@@ -48,9 +48,13 @@ docker compose logs network-atlas | head -20
 #   password   32ymWclEDxCcettr
 ```
 
-Store it then; only a hash is kept. Change it from the account button in the
-viewer, or reset it with `docker compose exec network-atlas python3 -m
-network_atlas account --reset-password`.
+It is reprinted on every start until someone signs in, so losing the log does not
+cost you the account; after the first sign-in only a hash is kept. Change it from
+the account button in the viewer, or reset it with:
+
+```bash
+docker compose exec network-atlas network-atlas account --reset-password
+```
 
 That pulls [`shortplanet/network-atlas`](https://hub.docker.com/r/shortplanet/network-atlas)
 and needs nothing else installed — every scanning tool is inside the image.
