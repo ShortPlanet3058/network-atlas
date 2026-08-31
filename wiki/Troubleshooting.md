@@ -115,8 +115,9 @@ Common causes:
 
 ## I do not know the viewer password
 
-It is printed once, at the first start that creates the account, and only a hash
-is kept afterwards. Set a new one from the machine itself:
+If nobody has signed in yet, restart the viewer — the password is reprinted until
+the account is first used. Otherwise only a hash is kept, so set a new one from
+the machine itself:
 
 ```bash
 make account-reset

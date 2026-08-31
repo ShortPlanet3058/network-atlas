@@ -26,18 +26,23 @@ curl -O https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/doc
 docker compose up -d
 ```
 
-The first start prints the login. It is shown once:
+The first start prints the login:
 
 ```console
 $ docker compose logs network-atlas | head -20
-  ┌─────────────────────────────────────────────────┐
-  │  Sign in to the viewer with these credentials.  │
-  │  They are shown once. Store them now.           │
-  ├─────────────────────────────────────────────────┤
-  │  username   admin                               │
-  │  password   32ymWclEDxCcettr                    │
-  └─────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────┐
+  │  Sign in to the viewer with these credentials.           │
+  │  Shown until the first successful sign-in, then not      │
+  │  again.                                                  │
+  ├──────────────────────────────────────────────────────────┤
+  │  username   admin                                        │
+  │  password   32ymWclEDxCcettr                             │
+  └──────────────────────────────────────────────────────────┘
 ```
+
+It is reprinted on every start until someone actually signs in, so a log you lost
+does not cost you the account. After the first sign-in it is never shown again —
+only a hash is kept.
 
 Change it from the account button in the viewer, or reset it with:
 
@@ -90,7 +95,7 @@ you want to map. A Raspberry Pi is enough.
 | Tag | Points at |
 |---|---|
 | `latest` | Most recent release |
-| `1.2.1` | That exact version, immutable |
+| `1.2.2` | That exact version, immutable |
 
 `1.0.0` and `1.1.0` predate the login and serve the viewer without
 authentication. Do not pin to them if the viewer will be reachable from your

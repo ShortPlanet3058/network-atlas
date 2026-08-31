@@ -3,8 +3,11 @@
 ## Sign in
 
 The viewer asks for a password. One account, `admin`, is created the first time
-the server starts, and its password is printed once — only a hash is kept, so
-store it then.
+the server starts, and its password is printed to the terminal.
+
+It is reprinted on every start until someone actually signs in — so if you lose
+the log, restarting shows it again. Once you have signed in it is settled: only a
+hash is kept and it is never shown again.
 
 ```bash
 docker compose logs network-atlas | head -20   # container

@@ -17,7 +17,7 @@ to the whole network. Sign in with the password printed on the first start:
 docker compose logs network-atlas | head -20
 ```
 
-It is shown once; only a hash is kept. Nothing else needs installing — every
+It is reprinted until someone signs in, then never again. Nothing else needs installing — every
 scanning tool is inside the image, pulled from
 [`shortplanet/network-atlas`](https://hub.docker.com/r/shortplanet/network-atlas).
 
@@ -114,7 +114,7 @@ The viewer prints its version at startup and reports it at `/api/session`.
 Images are published as both `latest` and an immutable version tag. To pin one:
 
 ```bash
-ATLAS_IMAGE=shortplanet/network-atlas:1.2.1 docker compose up -d
+ATLAS_IMAGE=shortplanet/network-atlas:1.2.2 docker compose up -d
 ```
 
 ## Upgrading

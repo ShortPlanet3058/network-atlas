@@ -543,18 +543,32 @@ class AtlasHandler(BaseHTTPRequestHandler):
 
 
 def ensure_account(db_path: Path) -> str | None:
-    """Create the viewer account on first run. Returns the password to print.
+    """Make sure a usable password has been shown. Returns the one to print.
 
-    Returns None when an account already exists, because the stored password is a
-    hash and cannot be recovered -- only replaced, from the viewer or with
-    `network-atlas account --reset-password`.
+    A password is generated and printed on every start until someone actually
+    signs in. Only a hash is kept, so a credential printed to a log that was then
+    lost -- a recreated container, a truncated log, a terminal scrolled past --
+    would otherwise be unrecoverable except by resetting it, and the account it
+    guards has never been used by anyone.
+
+    Once there has been a successful login the password is settled and never
+    reprinted: from then on it is something a person is relying on, and replacing
+    it is an explicit act.
+
+    Reprinting costs nothing an attacker could not already have. Reading the
+    output, or restarting the server to produce it, both need access to the host,
+    which is more than the viewer grants.
     """
     with AtlasDB(db_path) as db:
-        if db.account_exists():
+        account = db.account()
+        if account and account["last_login"]:
             return None
         password = auth.generate_password()
         salt, hashed = auth.hash_password(password)
-        db.create_account(auth.DEFAULT_USERNAME, hashed, salt)
+        if account:
+            db.set_account_password(int(account["id"]), hashed, salt)
+        else:
+            db.create_account(auth.DEFAULT_USERNAME, hashed, salt)
         return password
 
 
@@ -601,14 +615,14 @@ def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     print(f"Network Atlas {__version__}: http://{host}:{port}", flush=True)
     print(f"Database: {db_path}", flush=True)
     if new_password:
-        # Printed once and never again: only the hash is kept. Boxed because in a
-        # container this scrolls past in `docker logs` and is easy to miss.
+        # Boxed because in a container this scrolls past in `docker logs` and is
+        # easy to miss.
         # Boxed because in a container this scrolls past in `docker logs` and is
         # easy to miss. The width is computed rather than hand-aligned: the box
         # characters made a literal drift out of true every time it was edited.
         lines = [
             "Sign in to the viewer with these credentials.",
-            "They are shown once. Store them now.",
+            "Shown until the first successful sign-in, then not again.",
             None,  # divider
             f"username   {auth.DEFAULT_USERNAME}",
             f"password   {new_password}",

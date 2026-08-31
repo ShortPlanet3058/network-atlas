@@ -37,9 +37,10 @@ docker compose exec network-atlas python3 -m network_atlas <command>
 `--allow-remote`.
 
 **The viewer requires a login.** The first time it starts it creates one account,
-`admin`, with a random password printed to the terminal. It is shown once — only a
-hash is kept — so store it then. Change it from the viewer, under the account
-button in the top bar.
+`admin`, with a random password printed to the terminal. It is reprinted on every
+start until someone actually signs in, so losing the log does not cost you the
+account; after that only a hash is kept and it is never shown again. Change it
+from the viewer, under the account button in the top bar.
 
 `--allow-remote` is still required to serve on a non-loopback address. The login
 makes that safe; the flag keeps it deliberate.

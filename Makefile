@@ -135,7 +135,7 @@ start: ensure-db ## Start the viewer in the background
 	if pid="$$(viewer_pid)"; then \
 		echo "Started (PID $$pid): http://$(HOST):$(PORT)"; \
 		banner="$$(tail -n +$$((before + 1)) "$(LOG_FILE)" 2>/dev/null \
-			| sed -n '/They are shown once/,/^  └/p' \
+			| sed -n '/Sign in to the viewer/,/^  └/p' \
 			| sed -n '/username/p;/password/p' || true)"; \
 		if [ -n "$$banner" ]; then \
 			echo ""; \

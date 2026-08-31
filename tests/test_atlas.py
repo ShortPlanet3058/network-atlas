@@ -2178,6 +2178,25 @@ class AccountTestCase(unittest.TestCase):
             # An unbounded input would make scrypt a denial-of-service vector.
             auth.check_password_strength("x" * (auth.MAX_PASSWORD_LENGTH + 1))
 
+    def test_make_start_can_still_find_the_credential_banner(self) -> None:
+        """The Makefile greps the log for the banner; the anchor must match.
+
+        `make start` backgrounds the viewer into a log file, so it re-reads that
+        log to surface the generated password. It matches on a line of the banner,
+        which means editing the banner text can silently stop the password being
+        shown at all.
+        """
+        makefile = (ROOT / "Makefile").read_text()
+        found = re.search(r"sed -n '/([^/]+)/,/\^  └/p'", makefile)
+        self.assertIsNotNone(found, "make start no longer greps for the banner")
+        anchor = found.group(1)
+
+        server_source = (ROOT / "network_atlas" / "server.py").read_text()
+        self.assertIn(
+            anchor, server_source,
+            f"the Makefile looks for {anchor!r}, which the banner no longer prints",
+        )
+
     def test_a_failed_bind_does_not_consume_the_password(self) -> None:
         """A taken port must not cost a credential.
 
@@ -2205,6 +2224,41 @@ class AccountTestCase(unittest.TestCase):
         with AtlasDB(path) as db:
             self.assertFalse(db.account_exists())
 
+    def test_the_password_is_reprinted_until_someone_signs_in(self) -> None:
+        """A log you lost must not cost you the account.
+
+        Only a hash is kept, so a password printed into a container log that was
+        then recreated is unrecoverable — while guarding an account nobody has
+        ever used. It is therefore regenerated on each start until a successful
+        sign-in, and settled from then on.
+        """
+        from network_atlas import auth, server
+
+        path = Path(self.temp.name) / "reprint.db"
+        first = server.ensure_account(path)
+        second = server.ensure_account(path)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first, second, "the same password was reused")
+
+        with AtlasDB(path) as db:
+            account = db.account()
+            # Only the most recent one works; the earlier is gone.
+            self.assertTrue(auth.verify_password(
+                second, account["password_salt"], account["password_hash"]))
+            self.assertFalse(auth.verify_password(
+                first, account["password_salt"], account["password_hash"]))
+            self.assertEqual(db.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+            # Someone signs in.
+            db.touch_account_login(int(account["id"]))
+
+        # Settled: no new password, and the one in use still works.
+        self.assertIsNone(server.ensure_account(path))
+        with AtlasDB(path) as db:
+            account = db.account()
+            self.assertTrue(auth.verify_password(
+                second, account["password_salt"], account["password_hash"]))
+
     def test_first_start_creates_the_account_and_returns_the_password(self) -> None:
         """The password is shown once because only its hash is kept."""
         from network_atlas import auth, server
@@ -2222,8 +2276,14 @@ class AccountTestCase(unittest.TestCase):
             )
             # The password itself is nowhere in the row.
             self.assertNotIn(password.encode(), bytes(account["password_hash"]))
-        # A second start must not mint a new password over the existing account.
-        self.assertIsNone(server.ensure_account(path))
+        # A second start must not create a second account. Whether it mints a new
+        # password is the reprint rule, covered by
+        # test_the_password_is_reprinted_until_someone_signs_in.
+        server.ensure_account(path)
+        with AtlasDB(path) as db:
+            self.assertEqual(
+                db.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1
+            )
 
 
 if __name__ == "__main__":

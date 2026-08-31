@@ -85,7 +85,9 @@ So the web interface asks for a password:
 - There is **one account**, `admin`. It is created the first time the server
   starts, with a random password printed to the terminal — so a fresh container
   shows its credentials in `docker logs` and nothing ships with a default
-  password. It is shown once; only a hash is kept.
+  password. It is reprinted on each start until the first successful sign-in, so
+  a lost log does not lock you out of an account nobody has used yet; after that
+  only a hash is kept and it is never shown again.
 - Passwords are hashed with **scrypt** and a per-account salt.
 - **Eight wrong guesses** from one address locks that address out for five
   minutes. The correct password is refused during the lockout too, or the limit
