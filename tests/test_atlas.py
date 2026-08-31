@@ -1777,6 +1777,36 @@ class AtlasTestCase(unittest.TestCase):
             self.assertIn("VCS_REF", override.read_text(),
                           "a compose build would stamp no revision")
 
+    def test_an_address_changing_hands_leaves_no_husk(self) -> None:
+        """DHCP moving an address must not leave a nameless "device" behind.
+
+        resolve_address_conflicts takes the address from the previous holder. When
+        that address was all it had, what remains has no address, no hardware
+        address and no name -- and being flagged online, the usual ghost sweep
+        skipped it, so it showed in the inventory as "Device 18 / unknown".
+        """
+        husk = self.db.ensure_device(address="10.23.45.80")
+        self.db.conn.execute("DELETE FROM addresses WHERE device_id=?", (husk,))
+        self.db.add_observation(
+            husk, "conflict", "address_reassigned", "Lost 10.23.45.80", 0.9
+        )
+        # Everything that must survive the same sweep.
+        link_layer_only = self.db.ensure_device(mac="aa:bb:cc:dd:ee:80")
+        named = self.db.ensure_device(address="10.23.45.81", hostname="printer")
+        inferred = self.db.ensure_inferred_device(
+            "unmanaged-switch:9:1", hostname="Unmanaged switch on Gi1/0/1",
+            device_type="switch",
+        )
+        this_machine = self.db.ensure_device(address="10.23.45.82", is_local=True)
+        self.db.conn.execute("DELETE FROM addresses WHERE device_id=?", (this_machine,))
+        self.db.commit()
+
+        self.db.prune_ghosts()
+        remaining = {row[0] for row in self.db.conn.execute("SELECT id FROM devices")}
+        self.assertNotIn(husk, remaining)
+        for keep in (link_layer_only, named, inferred, this_machine):
+            self.assertIn(keep, remaining)
+
     def test_real_world_network_and_media_signatures(self) -> None:
         openwrt = {"os_name": "OpenWrt 21.02 (Linux 5.4)", "services": [], "observations": []}
         yealink = {

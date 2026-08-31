@@ -1275,8 +1275,29 @@ class AtlasDB:
                  AND id NOT IN (SELECT source_device_id FROM edges)
                  AND id NOT IN (SELECT target_device_id FROM edges)"""
         )
+        removed = cursor.rowcount or 0
+
+        # Husks left by an address changing hands. When DHCP moves an address to a
+        # different MAC, resolve_address_conflicts takes it from the previous
+        # holder -- and if that address was all it had, what remains has no
+        # address, no hardware address and no name. It is still flagged online, so
+        # the sweep above will not touch it, and it shows in the inventory as
+        # "Device 18 / unknown", which is not a device at all.
+        #
+        # A synthetic key or a MAC is enough to be real: an inferred switch has the
+        # former, a link-layer-only device the latter.
+        cursor = self.conn.execute(
+            """DELETE FROM devices WHERE mac IS NULL AND synthetic_key IS NULL
+                 AND (hostname IS NULL OR hostname='')
+                 AND (manual_name IS NULL OR manual_name='')
+                 AND (vendor IS NULL OR vendor='')
+                 AND is_local=0
+                 AND id NOT IN (SELECT device_id FROM addresses)
+                 AND id NOT IN (SELECT device_id FROM services WHERE device_id IS NOT NULL)"""
+        )
+        removed += cursor.rowcount or 0
         self.conn.commit()
-        return cursor.rowcount or 0
+        return removed
 
     def scans(self, limit: int = 30) -> list[dict[str, Any]]:
         return [
