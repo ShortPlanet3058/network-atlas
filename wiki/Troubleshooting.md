@@ -106,9 +106,38 @@ make logs
 
 Common causes:
 
-- **Port already in use.** Another viewer, or a container. `make start PORT=8766`.
+- **Port already in use.** Most often the container: it uses host networking, so
+  it holds the host's port 8765 directly and cannot share it with a natively
+  started viewer. `make status` says so when that is the case. Run one or the
+  other — `make docker-down`, or `make start PORT=8766`.
 - **Stale PID file.** `make stop` clears it; `make start` also handles this.
 - **Database problem.** `make init` migrates and reports.
+
+## I do not know the viewer password
+
+It is printed once, at the first start that creates the account, and only a hash
+is kept afterwards. Set a new one from the machine itself:
+
+```bash
+make account-reset
+# or
+network-atlas account --reset-password
+# in a container
+docker compose exec network-atlas python3 -m network_atlas account --reset-password
+```
+
+Every signed-in browser is signed out. `make account` shows the username and when
+it last signed in, without revealing anything secret.
+
+There is deliberately no reset over HTTP: a password reset reachable from the
+network is a way in.
+
+## "Too many failed attempts"
+
+Eight wrong passwords from one address locks that address out for five minutes,
+and the correct password is refused during the lockout too — otherwise the limit
+would not stop a guessing program. Wait it out, or restart the viewer, which
+clears the lockout along with every session.
 
 ## The container restart-loops
 

@@ -10,8 +10,15 @@ curl -O https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/doc
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:8765>. Nothing else needs installing — every scanning tool
-is inside the image, pulled from
+Open <http://127.0.0.1:8765>, or the machine's own address — the container serves
+to the whole network. Sign in with the password printed on the first start:
+
+```bash
+docker compose logs network-atlas | head -20
+```
+
+It is shown once; only a hash is kept. Nothing else needs installing — every
+scanning tool is inside the image, pulled from
 [`shortplanet/network-atlas`](https://hub.docker.com/r/shortplanet/network-atlas).
 
 Requirements: Docker Engine and Compose v2. On Debian, `apt install docker.io
@@ -56,7 +63,8 @@ it can send raw packets and capture traffic. Then:
 make start
 ```
 
-Open <http://127.0.0.1:8765>.
+`make start` prints the login the first time it runs. Open
+<http://127.0.0.1:8765> and sign in as `admin`.
 
 ### Scanning without root
 

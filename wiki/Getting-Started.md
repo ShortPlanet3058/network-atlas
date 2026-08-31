@@ -1,5 +1,29 @@
 # Getting Started
 
+## Sign in
+
+The viewer asks for a password. One account, `admin`, is created the first time
+the server starts, and its password is printed once — only a hash is kept, so
+store it then.
+
+```bash
+docker compose logs network-atlas | head -20   # container
+make start                                      # native: printed as it starts
+```
+
+```
+  ┌─────────────────────────────────────────────────┐
+  │  username   admin                               │
+  │  password   o4Wog6vJ0dK3cQzY                    │
+  └─────────────────────────────────────────────────┘
+```
+
+Change it from the account button in the header. Lost it? `make account-reset`,
+or `network-atlas account --reset-password`. There is no reset over HTTP.
+
+Commands you run in a terminal never ask for this password — they open the
+database directly. It protects the web interface, not the tool.
+
 ## Run a full sweep
 
 With the viewer open at <http://127.0.0.1:8765>, click **Scan network** and choose

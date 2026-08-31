@@ -1,7 +1,13 @@
 # Web Interface
 
-The viewer runs at <http://127.0.0.1:8765>. It is read-and-control: everything
-except the Wi-Fi survey and file imports can be done from here.
+The viewer runs at <http://127.0.0.1:8765> — and, from the container, on the
+machine's own address so other devices on the network can reach it. It is
+read-and-control: everything except the Wi-Fi survey and file imports can be done
+from here.
+
+It asks for a password first. See
+[Getting Started](https://github.com/ShortPlanet3058/network-atlas/wiki/Getting-Started)
+for where the initial one is printed.
 
 Light theme is the default; the sun/moon button in the header switches to dark and
 remembers your choice.
@@ -14,6 +20,7 @@ remembers your choice.
 | **Scan network** | Opens the scan dialog. |
 | **Reload** | Refetches everything without scanning. |
 | **Theme** | Light ↔ dark. |
+| **Account** | Change the password, or sign out. Changing it signs every other browser out. |
 
 While a scan runs, a progress pill appears with the current stage and a stop
 button. Progress is live, streamed from the scanner itself.

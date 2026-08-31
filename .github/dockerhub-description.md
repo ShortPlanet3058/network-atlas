@@ -26,8 +26,6 @@ curl -O https://raw.githubusercontent.com/ShortPlanet3058/network-atlas/main/doc
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:8765>, then click **Scan network → Full sweep**.
-
 The first start prints the login. It is shown once:
 
 ```console
@@ -50,6 +48,12 @@ docker compose exec network-atlas python3 -m network_atlas account --reset-passw
 The container serves on every interface, so the viewer is reachable from other
 machines on your network. Set `ATLAS_HOST=127.0.0.1` to keep it on the host's own
 loopback instead.
+
+Open <http://127.0.0.1:8765> — or the machine's own address from another device —
+sign in, then click **Scan network → Full sweep**.
+
+Commands you run in a terminal never ask for this password. They open the
+database directly; it protects the web interface, not the tool.
 
 Or without compose:
 
@@ -86,7 +90,11 @@ you want to map. A Raspberry Pi is enough.
 | Tag | Points at |
 |---|---|
 | `latest` | Most recent release |
-| `1.0.0` | That exact version, immutable |
+| `1.2.0` | That exact version, immutable |
+
+`1.0.0` and `1.1.0` predate the login and serve the viewer without
+authentication. Do not pin to them if the viewer will be reachable from your
+network.
 
 Built for **`linux/amd64`** and **`linux/arm64`** — so it runs on a Raspberry Pi 3
 or newer with a 64-bit OS, as well as on any x86 machine.
@@ -96,6 +104,7 @@ or newer with a 64-bit OS, as well as on any x86 machine.
 | Variable | Default | Effect |
 |---|---|---|
 | `ATLAS_PORT` | `8765` | Viewer port (the host's port, under host networking) |
+| `ATLAS_HOST` | `0.0.0.0` | Bind address. `127.0.0.1` restricts it to the host itself |
 | `NETWORK_ATLAS_DB` | `/data/atlas.db` | Database path |
 
 The inventory, findings and event history live in `/data` — mount a volume there

@@ -12,6 +12,7 @@ service fingerprint ever leaves the machine.
 | If you want to… | Read |
 |---|---|
 | Install it | **[Installation](Installation)** |
+| Sign in for the first time | **[Getting Started](Getting-Started)** |
 | Run your first scan | **[Getting Started](Getting-Started)** |
 | Understand the interface | **[Web Interface](Web-Interface)** |
 | Know what each scan does | **[Scanning](Scanning)** |
