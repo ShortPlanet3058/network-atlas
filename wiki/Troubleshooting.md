@@ -10,7 +10,7 @@ It reports which tools are present, the network it detected, and whether it can
 send raw packets and capture traffic. In Docker:
 
 ```bash
-docker compose exec network-atlas python3 -m network_atlas doctor
+docker compose exec network-atlas network-atlas doctor
 ```
 
 ---
@@ -124,7 +124,7 @@ make account-reset
 # or
 network-atlas account --reset-password
 # in a container
-docker compose exec network-atlas python3 -m network_atlas account --reset-password
+docker compose exec network-atlas network-atlas account --reset-password
 ```
 
 Every signed-in browser is signed out. `make account` shows the username and when

@@ -1748,6 +1748,42 @@ class AtlasTestCase(unittest.TestCase):
         )
         self.assertEqual(_snmp_error("", "Authentication failure"), "Authentication failure")
 
+    def test_the_documented_network_atlas_command_is_actually_provided(self) -> None:
+        """The docs are full of `network-atlas ...`; something must create it.
+
+        The console script in pyproject only exists after a pip install, which this
+        project deliberately does not require -- so for a long time every one of
+        those documented commands failed with "command not found", on the host and
+        in the container alike, and no page said how to get it.
+        """
+        docs = list((ROOT / "wiki").glob("*.md")) + [ROOT / "README.md"]
+        mentions = sum(
+            len(re.findall(r"\bnetwork-atlas [a-z][a-z-]+", page.read_text()))
+            for page in docs
+            if page.is_file()
+        )
+        self.assertGreater(mentions, 0, "no docs reference the command")
+
+        # The image must ship it, so `docker compose exec` works as documented.
+        dockerfile = ROOT / "Dockerfile"
+        if dockerfile.is_file():
+            self.assertIn(
+                "/usr/local/bin/network-atlas", dockerfile.read_text(),
+                "the container does not provide the documented command",
+            )
+
+        # And the host must have a documented way to create it.
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn("install-cli:", makefile)
+        self.assertIn("uninstall-cli:", makefile)
+
+        installation = (ROOT / "wiki" / "Installation.md")
+        if installation.is_file():
+            text = installation.read_text()
+            self.assertIn("install-cli", text, "installing the command is undocumented")
+            self.assertIn("python3 -m network_atlas", text,
+                          "the no-setup invocation is undocumented")
+
     def test_image_does_not_inherit_the_base_images_provenance(self) -> None:
         """LABEL inherits anything not overridden.
 

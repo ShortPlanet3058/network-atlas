@@ -57,7 +57,7 @@ and needs nothing else installed — every scanning tool is inside the image.
 
 Built for **amd64 and arm64**, so it runs on a Raspberry Pi 3 or newer with a
 64-bit OS as well as on any x86 machine. Pin a version with
-`ATLAS_IMAGE=shortplanet/network-atlas:1.2.2` if you want reproducible
+`ATLAS_IMAGE=shortplanet/network-atlas:1.2.3` if you want reproducible
 deployments.
 
 > **Linux hosts only for full discovery.** The container needs host networking to
@@ -82,6 +82,10 @@ make start       # start the viewer
 `make start` prints the login the first time it runs — username `admin` and a
 random password. Open <http://127.0.0.1:8765>, sign in, then use
 **Scan network** to collect data. No terminal needed after that.
+
+The docs refer to a `network-atlas` command. It is not installed by default:
+run `make install-cli` once to create it, or use `python3 -m network_atlas`,
+which needs no setup. The container already has it.
 
 ## First run
 

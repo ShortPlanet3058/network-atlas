@@ -1,5 +1,11 @@
 # Command Reference
 
+Commands are written here as `network-atlas <command>`. That command is not
+installed by default — run `make install-cli` once to create it, or use
+`python3 -m network_atlas <command>`, which needs no setup. Inside the container
+it is already present. See
+[Installation](https://github.com/ShortPlanet3058/network-atlas/wiki/Installation#the-network-atlas-command).
+
 Two interfaces over the same engine. The **CLI** is complete; **Make** targets are
 convenience wrappers that supply the database path and sensible defaults.
 
@@ -16,7 +22,7 @@ make help                                    # Make targets, grouped
 In Docker, prefix any CLI command with:
 
 ```bash
-docker compose exec network-atlas python3 -m network_atlas <command>
+docker compose exec network-atlas network-atlas <command>
 ```
 
 ---

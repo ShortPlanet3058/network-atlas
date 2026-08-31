@@ -448,6 +448,31 @@ release-tag: ## Tag the current commit as vVERSION and push the tag
 	git push origin "v$(VERSION)"; \
 	echo "Tagged and pushed v$(VERSION)."
 
+##@ Command line
+
+CLI_DIR ?= $(HOME)/.local/bin
+
+install-cli: ## Put a `network-atlas` command on your PATH (in ~/.local/bin)
+	@set -euo pipefail; \
+	mkdir -p "$(CLI_DIR)"; \
+	printf '%s\n' \
+		'#!/bin/sh' \
+		'# Launcher for network-atlas. Created by `make install-cli`.' \
+		'cd "$(CURDIR)" && exec $(PYTHON) -m network_atlas "$$@"' \
+		> "$(CLI_DIR)/network-atlas"; \
+	chmod 0755 "$(CLI_DIR)/network-atlas"; \
+	echo "Installed $(CLI_DIR)/network-atlas"; \
+	echo "It runs this checkout, so keep the repository where it is."; \
+	case ":$$PATH:" in \
+		*":$(CLI_DIR):"*) echo "Try it: network-atlas doctor";; \
+		*) echo ""; \
+		   echo "$(CLI_DIR) is not on your PATH. Add it:"; \
+		   echo "    echo 'export PATH=\"\$$HOME/.local/bin:\$$PATH\"' >> ~/.zshrc && exec zsh";; \
+	esac
+
+uninstall-cli: ## Remove the `network-atlas` command again
+	@rm -f "$(CLI_DIR)/network-atlas" && echo "Removed $(CLI_DIR)/network-atlas"
+
 ##@ Development
 
 wiki-sync: ## Publish wiki/*.md to the GitHub wiki

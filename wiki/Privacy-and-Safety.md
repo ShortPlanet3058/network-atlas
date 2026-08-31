@@ -108,7 +108,7 @@ Lost the password? Reset it from the machine itself:
 ```bash
 network-atlas account --reset-password
 # in a container:
-docker compose exec network-atlas python3 -m network_atlas account --reset-password
+docker compose exec network-atlas network-atlas account --reset-password
 ```
 
 There is no reset over HTTP, because a reset over HTTP is a way in.

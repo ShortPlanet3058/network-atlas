@@ -11,7 +11,7 @@ carries every scanning tool, so nothing else needs installing.
 
 ```bash
 docker compose logs -f
-docker compose exec network-atlas python3 -m network_atlas doctor
+docker compose exec network-atlas network-atlas doctor
 docker compose down          # the data volume is kept
 ```
 
@@ -19,7 +19,7 @@ To pull the image without running it:
 
 ```bash
 docker pull shortplanet/network-atlas          # :latest
-docker pull shortplanet/network-atlas:1.2.2    # a pinned version
+docker pull shortplanet/network-atlas:1.2.3    # a pinned version
 ```
 
 From a clone of the repository, `make docker-up` does the same as compose but
@@ -149,7 +149,7 @@ Two things this is sensitive to, both learned the hard way:
   connect scan with no OS detection. It looks like free hardening and costs a
   headline feature. A test enforces its absence.
 
-Verify with `docker compose exec network-atlas python3 -m network_atlas doctor` —
+Verify with `docker compose exec network-atlas network-atlas doctor` —
 `nmap_raw_packets` must be `true`.
 
 ## What the container cannot do
@@ -209,7 +209,7 @@ reports itself unavailable rather than failing.
 Pin a version if you want reproducible deployments:
 
 ```yaml
-ATLAS_IMAGE=shortplanet/network-atlas:1.2.2
+ATLAS_IMAGE=shortplanet/network-atlas:1.2.3
 ```
 
 Upgrade with `docker compose pull && docker compose up -d`. Your data volume is

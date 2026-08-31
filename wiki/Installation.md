@@ -34,7 +34,7 @@ to do on macOS or Windows.
 
 | Purpose | Package |
 |---|---|
-| Runtime | `python3` (3.11 or newer) — standard library only, no `pip install` |
+| Runtime | `python3` (3.11 or newer) — standard library only, nothing to pip-install |
 | Build/run helper | `make`, `iproute2` |
 | Active scanning | `nmap` |
 | Passive discovery | `tshark`, `dumpcap` (from `wireshark-common`) |
@@ -65,6 +65,32 @@ make start
 
 `make start` prints the login the first time it runs. Open
 <http://127.0.0.1:8765> and sign in as `admin`.
+
+### The `network-atlas` command
+
+The documentation uses a `network-atlas ...` command throughout. It does not
+exist until you ask for it — the project installs nothing into your environment
+by default.
+
+Three ways to run any command, all equivalent:
+
+```bash
+make install-cli                 # then: network-atlas doctor
+python3 -m network_atlas doctor  # always works from the repository, no setup
+make doctor                      # the common ones have Make targets
+```
+
+`make install-cli` writes a small launcher to `~/.local/bin/network-atlas` that
+runs this checkout, so keep the repository where it is. It tells you if
+`~/.local/bin` is not on your `PATH`. `make uninstall-cli` removes it.
+
+Nothing is compiled or pip-installed; the launcher is a three-line shell script.
+
+**In the container the command is already there:**
+
+```bash
+docker compose exec network-atlas network-atlas account --reset-password
+```
 
 ### Scanning without root
 
@@ -106,7 +132,7 @@ Check what you are running:
 
 ```bash
 python3 -m network_atlas --version
-docker compose exec network-atlas python3 -m network_atlas --version
+docker compose exec network-atlas network-atlas --version
 ```
 
 The viewer prints its version at startup and reports it at `/api/session`.
@@ -114,7 +140,7 @@ The viewer prints its version at startup and reports it at `/api/session`.
 Images are published as both `latest` and an immutable version tag. To pin one:
 
 ```bash
-ATLAS_IMAGE=shortplanet/network-atlas:1.2.2 docker compose up -d
+ATLAS_IMAGE=shortplanet/network-atlas:1.2.3 docker compose up -d
 ```
 
 ## Upgrading

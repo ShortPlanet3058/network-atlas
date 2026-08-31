@@ -81,6 +81,17 @@ WORKDIR /app
 COPY --chown=atlas:atlas network_atlas/ ./network_atlas/
 COPY --chown=atlas:atlas README.md PRIVACY.md ./
 
+# The documentation refers to a `network-atlas` command throughout, so the image
+# provides one. A three-line shim rather than a pip install: the package is pure
+# standard library and is already on WORKDIR, so installing it would only be a way
+# to generate this script.
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        '# Launcher for the documented `network-atlas ...` commands.' \
+        'cd /app && exec python3 -m network_atlas "$@"' \
+        > /usr/local/bin/network-atlas \
+    && chmod 0755 /usr/local/bin/network-atlas
+
 USER atlas
 VOLUME ["/data"]
 EXPOSE 8765

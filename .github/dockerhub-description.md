@@ -47,7 +47,7 @@ only a hash is kept.
 Change it from the account button in the viewer, or reset it with:
 
 ```bash
-docker compose exec network-atlas python3 -m network_atlas account --reset-password
+docker compose exec network-atlas network-atlas account --reset-password
 ```
 
 The container serves on every interface, so the viewer is reachable from other
@@ -95,7 +95,7 @@ you want to map. A Raspberry Pi is enough.
 | Tag | Points at |
 |---|---|
 | `latest` | Most recent release |
-| `1.2.2` | That exact version, immutable |
+| `1.2.3` | That exact version, immutable |
 
 `1.0.0` and `1.1.0` predate the login and serve the viewer without
 authentication. Do not pin to them if the viewer will be reachable from your
