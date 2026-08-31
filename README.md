@@ -57,7 +57,7 @@ and needs nothing else installed — every scanning tool is inside the image.
 
 Built for **amd64 and arm64**, so it runs on a Raspberry Pi 3 or newer with a
 64-bit OS as well as on any x86 machine. Pin a version with
-`ATLAS_IMAGE=shortplanet/network-atlas:1.1.0` if you want reproducible
+`ATLAS_IMAGE=shortplanet/network-atlas:1.2.0` if you want reproducible
 deployments.
 
 > **Linux hosts only for full discovery.** The container needs host networking to

@@ -106,7 +106,7 @@ The viewer prints its version at startup and reports it at `/api/session`.
 Images are published as both `latest` and an immutable version tag. To pin one:
 
 ```bash
-ATLAS_IMAGE=shortplanet/network-atlas:1.1.0 docker compose up -d
+ATLAS_IMAGE=shortplanet/network-atlas:1.2.0 docker compose up -d
 ```
 
 ## Upgrading
