@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import queue
 import secrets
@@ -483,10 +484,19 @@ class AtlasHandler(BaseHTTPRequestHandler):
             self.log_error("request failed: %s", exc)
             self._json({"error": "internal server error"}, 500)
 
+    # Requests that say nothing and arrive constantly. The container health check
+    # runs every 30s, which produced 1293 of the 1297 lines in a day's container
+    # log and buried the startup output -- including the one-time credential
+    # banner, which is the whole reason someone reads `docker logs`. The event
+    # stream is long-lived and equally uninformative. Only these two: a data
+    # endpoint being polled is real traffic and should stay visible.
+    _QUIET_ROUTES = ("/healthz", "/api/stream")
+
     def log_message(self, format_string: str, *args: object) -> None:
-        if "/api/stream" in str(args):
+        rendered = format_string % args
+        if any(route in rendered for route in self._QUIET_ROUTES) and " 200 " in f" {rendered} ":
             return
-        print(f"[viewer] {self.address_string()} {format_string % args}", flush=True)
+        print(f"[viewer] {self.address_string()} {rendered}", flush=True)
 
 
 def ensure_account(db_path: Path) -> str | None:
@@ -508,7 +518,6 @@ def ensure_account(db_path: Path) -> str | None:
 def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     manager = JobManager(db_path)
     sessions = auth.SessionStore()
-    new_password = ensure_account(db_path)
 
     def submit(kind: str, parameters: dict[str, object]) -> object:
         return manager.submit(kind, parameters)
@@ -522,8 +531,25 @@ def serve(db_path: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
             "sessions": sessions,
         },
     )
-    httpd = ThreadingHTTPServer((host, port), handler)
+
+    # Bind before touching the account. Creating it first meant a failed bind
+    # created the account, died before reaching the line that prints its password,
+    # and left an account whose password nobody had ever seen -- recoverable only
+    # with `account --reset-password`. The port being taken must not cost a
+    # credential.
+    try:
+        httpd = ThreadingHTTPServer((host, port), handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            raise RuntimeError(
+                f"Port {port} is already in use. Another viewer, or the Network "
+                f"Atlas container -- which uses host networking and so holds the "
+                f"host's port -- may be running. Stop it, or choose another port "
+                f"with --port."
+            ) from exc
+        raise
     httpd.daemon_threads = True
+    new_password = ensure_account(db_path)
     with AtlasDB(db_path) as db:
         db.reap_stale_scans()
         scheduler.ensure_defaults(db)

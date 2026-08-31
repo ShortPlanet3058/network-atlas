@@ -110,6 +110,22 @@ start: ensure-db ## Start the viewer in the background
 	if pid="$$(viewer_pid)"; then \
 		echo "Already running (PID $$pid): http://$(HOST):$(PORT)"; exit 0; \
 	fi; \
+	if ss -ltn 2>/dev/null | grep -q ":$(PORT) "; then \
+		echo "Port $(PORT) is already in use on this host." >&2; \
+		echo "" >&2; \
+		if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx network-atlas; then \
+			echo "The Network Atlas container is running, and it uses host networking --" >&2; \
+			echo "so it holds the host's port $(PORT) directly. Run one or the other:" >&2; \
+			echo "    make docker-down          # stop the container" >&2; \
+			echo "    make start PORT=8766      # or put the native viewer elsewhere" >&2; \
+		else \
+			echo "Something else is listening there. Find it with:" >&2; \
+			echo "    ss -ltnp | grep :$(PORT)" >&2; \
+			echo "then stop it, or start the viewer elsewhere:" >&2; \
+			echo "    make start PORT=8766" >&2; \
+		fi; \
+		exit 2; \
+	fi; \
 	rm -f "$(PID_FILE)"; \
 	before=$$(wc -l <"$(LOG_FILE)" 2>/dev/null || echo 0); \
 	nohup env PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m network_atlas --db "$(DB)" \
@@ -131,8 +147,8 @@ start: ensure-db ## Start the viewer in the background
 			echo "    make account-reset"; \
 		fi; \
 	else \
-		echo "Viewer failed to start. Recent log output:" >&2; \
-		tail -20 "$(LOG_FILE)" >&2 || true; \
+		echo "Viewer failed to start. Output from this attempt:" >&2; \
+		tail -n +$$((before + 1)) "$(LOG_FILE)" >&2 || true; \
 		rm -f "$(PID_FILE)"; exit 1; \
 	fi
 
@@ -153,6 +169,12 @@ status: ## Show whether the viewer is running
 	@set -euo pipefail; $(VIEWER_PID); \
 	if pid="$$(viewer_pid)"; then \
 		echo "running (PID $$pid) — http://$(HOST):$(PORT)"; \
+	elif ss -ltn 2>/dev/null | grep -q ":$(PORT) "; then \
+		if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx network-atlas; then \
+			echo "stopped — but the container is serving on $(PORT) (make docker-logs)"; \
+		else \
+			echo "stopped — but something else is listening on $(PORT) (ss -ltnp | grep :$(PORT))"; \
+		fi; \
 	else \
 		echo "stopped"; \
 	fi

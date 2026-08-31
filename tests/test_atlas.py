@@ -2074,6 +2074,33 @@ class AccountTestCase(unittest.TestCase):
             # An unbounded input would make scrypt a denial-of-service vector.
             auth.check_password_strength("x" * (auth.MAX_PASSWORD_LENGTH + 1))
 
+    def test_a_failed_bind_does_not_consume_the_password(self) -> None:
+        """A taken port must not cost a credential.
+
+        The account was created before the socket was bound, while its password was
+        printed after -- so a port collision created an account whose password
+        nobody had ever seen, recoverable only by resetting it.
+        """
+        import socket
+
+        from network_atlas import server
+
+        path = Path(self.temp.name) / "contended.db"
+        holder = socket.socket()
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        self.addCleanup(holder.close)
+        port = holder.getsockname()[1]
+
+        with self.assertRaises(RuntimeError) as caught:
+            server.serve(path, host="127.0.0.1", port=port)
+        self.assertIn("already in use", str(caught.exception))
+
+        # No account, so the next start still prints a password the user can read.
+        with AtlasDB(path) as db:
+            self.assertFalse(db.account_exists())
+
     def test_first_start_creates_the_account_and_returns_the_password(self) -> None:
         """The password is shown once because only its hash is kept."""
         from network_atlas import auth, server
