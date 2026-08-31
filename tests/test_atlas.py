@@ -1910,6 +1910,80 @@ class ViewerAuthTestCase(unittest.TestCase):
         return cookie, json.loads(payload)["token"]
 
     # -- the boundary ---------------------------------------------------------
+    def test_the_login_page_can_actually_run_under_its_own_csp(self) -> None:
+        """The page must not be blocked by the policy served alongside it.
+
+        The login page's CSS and script are inline, because it has to render
+        before any authenticated request can succeed. Under a `style-src 'self'`
+        policy the browser refuses both: the page arrives unstyled and the submit
+        handler never runs, so the button does nothing. No HTTP-level test catches
+        this -- urllib does not enforce CSP -- so the invariant is asserted here.
+        """
+        import re
+
+        status, payload, headers = self.call("/login")
+        self.assertEqual(status, 200)
+        html = payload.decode()
+        policy = headers["Content-Security-Policy"]
+
+        nonces = set(re.findall(r"'nonce-([^']+)'", policy))
+        self.assertTrue(nonces, f"no nonce in the policy served with the page: {policy}")
+        self.assertNotIn(
+            self.server_module.CSP_NONCE_PLACEHOLDER, html,
+            "the placeholder was shipped verbatim, so the browser blocks the page",
+        )
+
+        # Every inline block must carry a nonce the policy authorises.
+        blocks = re.findall(r"<(style|script)(\s[^>]*)?>", html)
+        self.assertTrue(blocks, "expected inline style and script on the login page")
+        for tag, attributes in blocks:
+            found = re.search(r'nonce="([^"]+)"', attributes or "")
+            self.assertIsNotNone(found, f"inline <{tag}> has no nonce")
+            self.assertIn(found.group(1), nonces, f"<{tag}> nonce is not in the policy")
+
+        # And the policy must not have been loosened to make that work.
+        self.assertNotIn("unsafe-inline", policy)
+        self.assertNotIn("unsafe-eval", policy)
+
+    def test_each_login_page_response_uses_a_fresh_nonce(self) -> None:
+        """A reused nonce is no better than 'unsafe-inline'."""
+        import re
+
+        seen = set()
+        for _ in range(3):
+            _, _, headers = self.call("/login")
+            seen.update(re.findall(r"'nonce-([^']+)'", headers["Content-Security-Policy"]))
+        self.assertEqual(len(seen), 3, f"nonce was not unique per response: {seen}")
+
+    def test_the_app_page_needs_no_inline_anything(self) -> None:
+        """Its CSS and JS are separate files, so the strict policy applies to it."""
+        import re
+
+        cookie, _ = self.sign_in()
+        status, payload, headers = self.call("/", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Security-Policy"], self.server_module.CSP)
+        html = payload.decode()
+        # An inline script or style here would be silently blocked in a browser.
+        self.assertNotIn("<script>", html)
+        for tag, attributes in re.findall(r"<(style|script)(\s[^>]*)?>", html):
+            if tag == "script":
+                self.assertIn("src=", attributes or "", "inline script on the app page")
+        # Inline event handlers are blocked by the same policy.
+        self.assertEqual(re.findall(r"\son[a-z]+\s*=", html), [])
+
+    def test_neither_page_asks_the_browser_for_a_missing_favicon(self) -> None:
+        """A 404 on every page load, in the console and the server log."""
+        for path in ("/login", "/"):
+            with self.subTest(page=path):
+                cookie = None if path == "/login" else self.sign_in()[0]
+                _, payload, _ = self.call(path, cookie=cookie)
+                html = payload.decode()
+                self.assertIn('rel="icon"', html)
+                # Inline, so the browser issues no request at all. A linked file
+                # would have to be reachable without a session on the login page.
+                self.assertIn('rel="icon" href="data:image/svg+xml,', html)
+
     def test_public_routes_are_exactly_these(self) -> None:
         """The whole security boundary, asserted in one place.
 

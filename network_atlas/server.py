@@ -22,8 +22,12 @@ STATIC_FILES = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
-    "login.html": "text/html; charset=utf-8",
 }
+# Deliberately absent from STATIC_FILES: it carries a nonce placeholder that has
+# to be substituted per response, so serving it as a plain file would ship
+# "__CSP_NONCE__" to the browser under a policy that then blocks its own styles
+# and script. _login_page is the only way it goes out.
+LOGIN_PAGE = "login.html"
 
 # The only paths reachable without a session. Kept as an explicit set rather than
 # a pattern: a rule like "anything under /login" is one typo away from exposing
@@ -32,6 +36,21 @@ STATIC_FILES = {
 # login.html is self-contained -- its CSS is inline -- so an unauthenticated
 # browser needs no stylesheet or script from here to render the login form.
 PUBLIC_ROUTES = frozenset({"/login", "/login.html", "/api/login", "/healthz"})
+# The app page loads its CSS and JS as separate files, so it needs no inline
+# anything and the policy can stay this tight. form-action 'none' is safe because
+# every submission goes through fetch(), not a form POST.
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
+    "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'"
+)
+
+# The login page is the exception: it must render before any authenticated
+# request can succeed, so its CSS and JS are inline rather than fetched from a
+# protected path. A per-response nonce lets exactly those two blocks run without
+# opening the policy to inline content generally -- 'unsafe-inline' here would
+# apply to every page the viewer serves.
+CSP_NONCE_PLACEHOLDER = "__CSP_NONCE__"
+
 MAX_BODY = 64 * 1024
 
 # Mutating requests must prove they came from the app rather than from a page the
@@ -48,7 +67,15 @@ class AtlasHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # -- plumbing -------------------------------------------------------------
-    def _headers(self, status: int, content_type: str, length: int | None = None, **extra: str) -> None:
+    def _headers(
+        self,
+        status: int,
+        content_type: str,
+        length: int | None = None,
+        *,
+        csp: str | None = None,
+        **extra: str,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         if length is not None:
@@ -56,11 +83,7 @@ class AtlasHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'",
-        )
+        self.send_header("Content-Security-Policy", csp or CSP)
         self.send_header("Cache-Control", "no-store")
         for key, value in extra.items():
             self.send_header(key.replace("_", "-"), value)
@@ -80,6 +103,26 @@ class AtlasHandler(BaseHTTPRequestHandler):
             return
         body = path.read_bytes()
         self._headers(200, content_type, len(body))
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _login_page(self) -> None:
+        """Serve the login form with a nonce authorising its inline blocks."""
+        path = (STATIC_DIR / LOGIN_PAGE).resolve()
+        if STATIC_DIR.resolve() not in path.parents or not path.is_file():
+            self._json({"error": "not found"}, 404)
+            return
+        nonce = secrets.token_urlsafe(16)
+        html = path.read_text(encoding="utf-8").replace(CSP_NONCE_PLACEHOLDER, nonce)
+        body = html.encode("utf-8")
+        self._headers(
+            200, "text/html; charset=utf-8", len(body),
+            csp=(
+                f"default-src 'self'; script-src 'nonce-{nonce}'; "
+                f"style-src 'nonce-{nonce}'; img-src 'self' data:; "
+                "connect-src 'self'; base-uri 'none'; form-action 'none'"
+            ),
+        )
         if self.command != "HEAD":
             self.wfile.write(body)
 
@@ -142,7 +185,7 @@ class AtlasHandler(BaseHTTPRequestHandler):
         if route.startswith("/api/"):
             self._json({"error": "authentication required"}, 401)
         else:
-            self._static("login.html")
+            self._login_page()
         return None
 
     def _flag(self, query: dict[str, list[str]], name: str, default: bool = True) -> bool:
@@ -285,7 +328,7 @@ class AtlasHandler(BaseHTTPRequestHandler):
                 if self._session() is not None:
                     self._headers(303, "text/plain; charset=utf-8", 0, Location="/")
                     return
-                self._static("login.html")
+                self._login_page()
                 return
             if route == "/api/stream":
                 self._events()

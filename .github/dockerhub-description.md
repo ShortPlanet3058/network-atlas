@@ -90,11 +90,12 @@ you want to map. A Raspberry Pi is enough.
 | Tag | Points at |
 |---|---|
 | `latest` | Most recent release |
-| `1.2.0` | That exact version, immutable |
+| `1.2.1` | That exact version, immutable |
 
 `1.0.0` and `1.1.0` predate the login and serve the viewer without
 authentication. Do not pin to them if the viewer will be reachable from your
-network.
+network. `1.2.0` has the login but its sign-in page does not work — use `1.2.1`
+or later.
 
 Built for **`linux/amd64`** and **`linux/arm64`** — so it runs on a Raspberry Pi 3
 or newer with a 64-bit OS, as well as on any x86 machine.
